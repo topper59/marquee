@@ -2,10 +2,23 @@
 
 import time
 import threading
+from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional
 
 from PIL import Image
+
+
+class DisplayMode(Enum):
+    """What the panel is showing. NORMAL is the playing/idle display; the
+    rest are full-screen status pages owned by provisioning/auth flows."""
+    NORMAL     = "normal"
+    SETUP      = "setup"        # AP up: shows SSID + portal URL
+    CONNECTING = "connecting"   # joining WiFi
+    LINK_CODE  = "link_code"    # plex.tv/link code entry
+    ERROR      = "error"        # short failure text
+    INFO       = "info"         # button-press info page (IP, hostname)
+    RESETTING  = "resetting"    # factory-reset hold countdown
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +53,18 @@ class State:
         self.current_key: Optional[str] = None
         self.last_cycle = time.monotonic()
         self.dim = False
+        self.mode = DisplayMode.NORMAL
+        self.mode_payload: dict = {}
+
+    def set_mode(self, mode: DisplayMode, **payload):
+        with self.lock:
+            if self.mode != mode or self.mode_payload != payload:
+                self.mode = mode
+                self.mode_payload = payload
+
+    def get_mode(self) -> tuple[DisplayMode, dict]:
+        with self.lock:
+            return self.mode, dict(self.mode_payload)
 
     def _index_of(self, key: Optional[str]) -> Optional[int]:
         """Position of `key` in the current list. Caller must hold the lock."""

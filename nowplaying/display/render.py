@@ -9,12 +9,67 @@ from PIL import Image, ImageDraw
 from rgbmatrix import RGBMatrix, graphics
 
 from nowplaying import config
-from nowplaying.display.state import State
+from nowplaying.display.state import State, DisplayMode
 from nowplaying.display.matrix import (
     load_fonts, text_width, compute_text_layout, wrap_two_lines, format_remaining,
 )
 
 log = logging.getLogger("plex-matrix")
+
+AMBER = (229, 160, 13)
+GRAY  = (150, 150, 150)
+RED   = (200, 60, 50)
+
+
+def _centered(canvas, font, y, color, text):
+    x = max(0, (128 - text_width(font, text)) // 2)
+    graphics.DrawText(canvas, font, x, y, graphics.Color(*color), text)
+
+
+def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict):
+    """Full-screen status pages for setup/auth/reset. Called at ~2fps — a
+    handful of DrawText calls, no caching needed."""
+    _font_big, _font_sm, _font_sub, _font_clk = fonts
+
+    if mode is DisplayMode.SETUP:
+        _centered(canvas, _font_big, 12, AMBER, "Setup")
+        _centered(canvas, _font_sm, 26, GRAY, "Join WiFi network:")
+        _centered(canvas, _font_sm, 38, (235, 235, 235), payload.get("ssid", ""))
+        _centered(canvas, _font_sm, 52, GRAY, "then visit " + payload.get("url", "10.42.0.1"))
+
+    elif mode is DisplayMode.CONNECTING:
+        dots = "." * (1 + int(time.monotonic() * 2) % 3)
+        _centered(canvas, _font_big, 12, AMBER, "WiFi")
+        _centered(canvas, _font_sm, 32, GRAY, "Connecting to")
+        _centered(canvas, _font_sm, 44, (235, 235, 235), payload.get("ssid", "") + dots)
+
+    elif mode is DisplayMode.LINK_CODE:
+        _centered(canvas, _font_sm, 10, GRAY, "Link your Plex account")
+        # The code is the payload star — big font, letter-spaced by hand.
+        code = payload.get("code", "")
+        spaced = " ".join(code)
+        _centered(canvas, _font_big, 34, AMBER, spaced)
+        _centered(canvas, _font_sm, 52, (235, 235, 235), "enter at plex.tv/link")
+
+    elif mode is DisplayMode.ERROR:
+        _centered(canvas, _font_big, 12, RED, "Problem")
+        line1, line2 = wrap_two_lines(payload.get("text", ""), 21)
+        _centered(canvas, _font_sm, 30, GRAY, line1)
+        if line2:
+            _centered(canvas, _font_sm, 40, GRAY, line2)
+        _centered(canvas, _font_sm, 54, GRAY, payload.get("hint", ""))
+
+    elif mode is DisplayMode.INFO:
+        y = 12
+        for line in payload.get("lines", [])[:5]:
+            _centered(canvas, _font_sm, y, (235, 235, 235), line)
+            y += 11
+
+    elif mode is DisplayMode.RESETTING:
+        n = payload.get("seconds", 0)
+        _centered(canvas, _font_big, 16, RED, f"Reset in {n}")
+        _centered(canvas, _font_sm, 36, GRAY, "release button")
+        _centered(canvas, _font_sm, 47, GRAY, "to cancel")
 
 
 def is_within_schedule(start: dtime, stop: dtime) -> bool:
@@ -99,6 +154,24 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
         if dt < config.SCROLL_FRAME_MS / 1000:
             time.sleep((config.SCROLL_FRAME_MS / 1000) - dt)
         last_frame = time.monotonic()
+
+        # ── Status pages (setup/link/reset) ────────────────────────────────
+        # Drawn ahead of the schedule gate: someone actively setting up or
+        # holding the reset button must see the panel respond regardless of
+        # the display-off window. ~2fps is plenty for these.
+        mode, payload = state.get_mode()
+        if mode is not DisplayMode.NORMAL:
+            if target := (payload.get("brightness") or brightness_normal):
+                if target != last_brightness:
+                    matrix.brightness = target
+                    last_brightness = target
+            canvas.Clear()
+            draw_mode_screen(canvas, (_font_big, _font_sm, _font_sub, _font_clk),
+                             mode, payload)
+            canvas = matrix.SwapOnVSync(canvas)
+            was_active = True
+            stop.wait(0.5)
+            continue
 
         # ── Schedule gate ──────────────────────────────────────────────────
         active = is_within_schedule(sched_start, sched_stop)

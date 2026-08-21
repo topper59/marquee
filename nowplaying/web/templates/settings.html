@@ -36,18 +36,39 @@
 
   <div class="card">
     <h2>Plex server</h2>
-    <label>Server URL
-      <input type="text" data-path="plex.url" placeholder="https://192.168.1.10:32400">
-    </label>
-    <label>Access token <span class="hint-inline">(blank if your server allows this device without one)</span>
-      <input type="password" data-path="plex.token" autocomplete="off">
-    </label>
-    <label class="check">
-      <input type="checkbox" data-path="plex.verify_ssl"> Verify TLS certificate
-    </label>
-    <label>Poll interval (seconds)
-      <input type="number" data-path="plex.poll_seconds" min="1" max="3600">
-    </label>
+    <p id="plex-current" class="hint"></p>
+
+    <div class="picker">
+      <div class="row">
+        <button id="plex-scan" type="button">Find servers</button>
+        <button id="plex-signin" type="button">Sign in with Plex</button>
+      </div>
+      <ul id="plex-candidates" hidden></ul>
+
+      <div id="plex-link" hidden>
+        <p>Enter this code at <b>plex.tv/link</b> (it is also on the display):</p>
+        <div id="plex-code" class="linkcode"></div>
+        <p class="hint" id="plex-link-status">Waiting for you to enter the code…</p>
+      </div>
+
+      <label>Or enter the address yourself
+        <span class="manual-row">
+          <input type="text" id="plex-manual" placeholder="192.168.1.10:32400">
+          <button id="plex-use" type="button">Use</button>
+        </span>
+      </label>
+      <p class="hint" id="plex-picker-msg" hidden></p>
+    </div>
+
+    <details>
+      <summary>Advanced</summary>
+      <label class="check">
+        <input type="checkbox" data-path="plex.verify_ssl"> Verify TLS certificate
+      </label>
+      <label>Poll interval (seconds)
+        <input type="number" data-path="plex.poll_seconds" min="1" max="3600">
+      </label>
+    </details>
   </div>
 
   <div class="card">

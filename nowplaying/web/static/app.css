@@ -100,6 +100,34 @@ button:disabled { opacity: .5; cursor: default; }
 #now-playing li { padding: 4px 0; font-size: 14px; }
 #now-playing .who { color: var(--muted); }
 
+.picker ul { list-style: none; margin: 12px 0; padding: 0; }
+.picker li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.picker li .meta { color: var(--muted); font-size: 12px; }
+.picker li button { padding: 6px 12px; font-size: 13px; }
+.manual-row { display: flex; gap: 8px; margin-top: 4px; }
+.manual-row input { flex: 1; margin-top: 0; }
+
+.linkcode {
+  font: 700 40px/1.1 ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: 14px;
+  text-align: center;
+  color: var(--accent);
+  padding: 10px 0 10px 14px;   /* left pad balances letter-spacing tail */
+}
+
+details { margin-top: 12px; }
+summary { color: var(--muted); font-size: 13px; cursor: pointer; }
+
 #toast {
   position: fixed;
   bottom: 20px;
