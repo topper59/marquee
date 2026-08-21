@@ -66,6 +66,14 @@ class State:
         with self.lock:
             return self.mode, dict(self.mode_payload)
 
+    def clear_mode(self, *expected: DisplayMode):
+        """Back to NORMAL, but only from `expected` modes — so e.g. the info
+        page timing out cannot stomp a setup screen another thread raised."""
+        with self.lock:
+            if self.mode in expected:
+                self.mode = DisplayMode.NORMAL
+                self.mode_payload = {}
+
     def _index_of(self, key: Optional[str]) -> Optional[int]:
         """Position of `key` in the current list. Caller must hold the lock."""
         for i, s in enumerate(self.sessions):

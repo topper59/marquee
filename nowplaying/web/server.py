@@ -11,11 +11,20 @@ import threading
 
 from flask import Flask, jsonify, request, render_template
 
+from flask import redirect
+
 import nowplaying
 from nowplaying.config import RESTART_REQUIRED
 from nowplaying.display.state import DisplayMode
+from nowplaying.netmgr import AP_IP
 from nowplaying.plex import auth as plex_auth
 from nowplaying.plex.discovery import gdm_discover, probe_server
+
+# Paths OSes fetch to detect a captive portal; answering with a redirect to
+# the portal is what pops the sign-in sheet.
+CAPTIVE_PROBES = ("/generate_204", "/gen_204", "/hotspot-detect.html",
+                  "/library/test/success.html", "/connecttest.txt",
+                  "/ncsi.txt", "/success.txt", "/canonical.html")
 
 log = logging.getLogger("plex-matrix")
 
@@ -37,15 +46,50 @@ def _set_path(d, path, value):
     d[parts[-1]] = value
 
 
-def create_app(config, state) -> Flask:
+def create_app(config, state, netmgr=None) -> Flask:
     app = Flask(__name__)
+
+    def in_ap_mode() -> bool:
+        return netmgr is not None and netmgr.in_ap_mode()
+
+    @app.before_request
+    def captive_redirect():
+        """In AP mode the wildcard DNS points every hostname here; bounce
+        anything that isn't for the portal itself onto it."""
+        if not in_ap_mode():
+            return None
+        host = (request.host or "").split(":")[0]
+        if request.path in CAPTIVE_PROBES or host not in (AP_IP, "nowplaying.local"):
+            return redirect(f"http://{AP_IP}/", code=302)
+        return None
 
     @app.get("/")
     def index():
         cfg = config.get()
-        return render_template("settings.html",
+        template = "settings.html" if cfg["provisioned"] else "setup.html"
+        return render_template(template,
                                device_name=cfg["device"]["name"],
                                version=nowplaying.__version__)
+
+    # ── WiFi (provisioning) ───────────────────────────────────────────────
+    @app.get("/api/wifi/scan")
+    def wifi_scan():
+        if netmgr is None:
+            return jsonify({"networks": [], "error": "network management off"})
+        # Live scans usually fail while the AP is up — serve the cache then.
+        nets = netmgr.scan_cache if in_ap_mode() else netmgr.wifi_scan()
+        return jsonify({"networks": nets})
+
+    @app.post("/api/wifi/join")
+    def wifi_join():
+        if netmgr is None or netmgr.status == "passive":
+            return jsonify({"error": "network management off"}), 400
+        body = request.get_json(silent=True) or {}
+        ssid = str(body.get("ssid", "")).strip()
+        if not ssid:
+            return jsonify({"error": "ssid required"}), 400
+        netmgr.request_join(ssid, str(body.get("psk", "")))
+        return jsonify({"ok": True, "reconnect_to": "http://nowplaying.local/"})
 
     @app.get("/api/status")
     def status():
@@ -61,6 +105,11 @@ def create_app(config, state) -> Flask:
             "plex_url": cfg["plex"]["url"],
             "sessions": sessions,
             "dim": dim,
+            "network": {
+                "status": netmgr.status if netmgr else "passive",
+                "error": netmgr.last_error if netmgr else "",
+                "ip": netmgr.ip_address() if netmgr and not netmgr.in_ap_mode() else "",
+            },
         })
 
     @app.get("/api/settings")
@@ -214,11 +263,11 @@ def create_app(config, state) -> Flask:
     return app
 
 
-def start_web(config, state):
+def start_web(config, state, netmgr=None):
     """Start the web server thread. Returns the server (call .shutdown())."""
     from werkzeug.serving import make_server
 
-    app = create_app(config, state)
+    app = create_app(config, state, netmgr)
     port = config.get()["web"]["port"]
     server = make_server("0.0.0.0", port, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True, name="web").start()

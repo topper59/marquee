@@ -10,6 +10,7 @@ without touching the hardware.
 import os
 import sys
 import json
+import time
 import types
 import tempfile
 
@@ -170,6 +171,100 @@ with tempfile.TemporaryDirectory() as td:
     cb = Config(bad)
     check("corrupt file recovers", cb.get()["display"]["cycle_seconds"] == 10)
     check("corrupt file preserved", os.path.exists(bad + ".corrupt"))
+
+print("NetManager")
+import threading
+from nowplaying.netmgr import NetManager, AP_CON, STATION_CON
+from nowplaying.display.state import DisplayMode
+
+
+class FakeNM:
+    """Scripted nmcli. Profiles and link state mutate like the real thing."""
+    def __init__(self):
+        self.profiles = {}
+        self.wlan = "disconnected"
+        self.fail_join = False
+        self.calls = []
+
+    def __call__(self, args, timeout=None):
+        self.calls.append(" ".join(args))
+        j = self.calls[-1]
+        if "dev wifi list" in j:
+            return 0, "My\\: Net:78:WPA2\nOther:45:\nMy\\: Net:12:WPA2\nNowPlaying-Setup-AB12:99:\n"
+        if "NAME,TYPE con show" in j:
+            return 0, "".join(f"{n}:802-11-wireless\n" for n in self.profiles)
+        if "con add" in j:
+            self.profiles[args[args.index("con-name") + 1]] = True
+            return 0, ""
+        if "con delete" in j:
+            self.profiles.pop(args[-1], None)
+            return 0, ""
+        if "con up" in j:
+            name = args[-1]
+            if name == STATION_CON and self.fail_join:
+                return 1, ""
+            self.wlan = "connected"
+            return 0, ""
+        if "con down" in j:
+            self.wlan = "disconnected"
+            return 0, ""
+        if "dev status" in j:
+            return 0, f"wlan0:{self.wlan}\nlo:unmanaged\n"
+        if "dev show" in j:
+            return 0, "IP4.ADDRESS[1]:192.168.5.7/24\n"
+        return 0, ""
+
+
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
+    nc = Config(os.path.join(td, "net.json"))
+    nc.update({"network.manage": True, "network.join_timeout_s": 10})
+    fake = FakeNM()
+    nstate = State()
+    nstop = threading.Event()
+    nm = NetManager(nc, nstate, nstop, run_cmd=fake)
+
+    nets = nm.wifi_scan()
+    check("scan parses escaped colon ssid", nets[0]["ssid"] == "My: Net")
+    check("scan dedupes to strongest", nets[0]["signal"] == 78)
+    check("scan hides own setup AP", all(not n["ssid"].startswith("NowPlaying-Setup")
+                                         for n in nets))
+    check("scan marks security", nets[0]["secured"] and not nets[1]["secured"])
+    check("no station profiles yet", nm.station_profile_names() == [])
+
+    def wait_status(want, timeout=15):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if nm.status == want:
+                return True
+            time.sleep(0.1)
+        return False
+
+    nm.start()
+    check("boots into AP mode", wait_status("ap"))
+    check("AP profile created", AP_CON in fake.profiles)
+    mode, payload = nstate.get_mode()
+    check("panel shows setup screen", mode is DisplayMode.SETUP and
+          payload["ssid"].startswith("NowPlaying-Setup-"))
+
+    fake.fail_join = True
+    nm.request_join("My: Net", "wrongpass")
+    check("failed join returns to AP", wait_status("joining") and wait_status("ap"))
+    check("failed join reported", "My: Net" in nm.last_error)
+    check("bad profile deleted", STATION_CON not in fake.profiles)
+
+    fake.fail_join = False
+    nm.request_join("My: Net", "rightpass")
+    check("successful join goes online", wait_status("online"))
+    check("station profile kept", STATION_CON in fake.profiles)
+    mode, _ = nstate.get_mode()
+    check("panel back to normal", mode is DisplayMode.NORMAL)
+    check("ip parsed", nm.ip_address() == "192.168.5.7")
+    psk_cmd = [c for c in fake.calls if "wifi-sec.psk" in c][-1]
+    check("psk passed to nmcli", "rightpass" in psk_cmd)
+    nstop.set()
+    nm.join(timeout=5)
 
 print("parse_hhmm")
 check("parses", parse_hhmm("07:30").hour == 7)

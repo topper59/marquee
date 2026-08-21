@@ -100,8 +100,19 @@ button:disabled { opacity: .5; cursor: default; }
 #now-playing li { padding: 4px 0; font-size: 14px; }
 #now-playing .who { color: var(--muted); }
 
-.picker ul { list-style: none; margin: 12px 0; padding: 0; }
-.picker li {
+.stepnum {
+  display: inline-grid;
+  place-items: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #000;
+  font-size: 13px;
+  margin-right: 6px;
+}
+
+.picker ul, .netlist { list-style: none; margin: 12px 0; padding: 0; }
+.picker li, .netlist li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -112,8 +123,8 @@ button:disabled { opacity: .5; cursor: default; }
   margin-bottom: 8px;
   font-size: 14px;
 }
-.picker li .meta { color: var(--muted); font-size: 12px; }
-.picker li button { padding: 6px 12px; font-size: 13px; }
+.picker li .meta, .netlist li .meta { color: var(--muted); font-size: 12px; }
+.picker li button, .netlist li button { padding: 6px 12px; font-size: 13px; }
 .manual-row { display: flex; gap: 8px; margin-top: 4px; }
 .manual-row input { flex: 1; margin-top: 0; }
 

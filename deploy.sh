@@ -40,8 +40,10 @@ if [ "$push_env" = 1 ]; then
 fi
 
 if [ "$push_unit" = 1 ]; then
-  echo "→ pushing unit"
+  echo "→ pushing unit + captive dnsmasq conf"
   scp -o ConnectTimeout=25 pi/etc/plex-matrix.service "$PI":/etc/systemd/system/plex-matrix.service
+  $SSH "$PI" 'mkdir -p /etc/NetworkManager/dnsmasq-shared.d'
+  scp -o ConnectTimeout=25 pi/etc/captive-dnsmasq.conf "$PI":/etc/NetworkManager/dnsmasq-shared.d/captive.conf
   $SSH "$PI" 'systemctl daemon-reload'
 fi
 

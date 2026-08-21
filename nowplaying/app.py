@@ -41,11 +41,18 @@ def main():
     state  = State()
     stop   = threading.Event()
 
+    from nowplaying.netmgr import NetManager
+    netmgr = NetManager(config, state, stop)
+    netmgr.start()   # exits immediately unless network.manage is enabled
+
+    from nowplaying.resetbtn import ResetButton
+    ResetButton(config, state, stop, netmgr).start()
+
     web_server = None
     if cfg["web"]["enabled"]:
         try:
             from nowplaying.web.server import start_web
-            web_server = start_web(config, state)
+            web_server = start_web(config, state, netmgr)
         except Exception:
             # The panel must keep working even if the web UI cannot start
             # (port taken, missing dependency, …).

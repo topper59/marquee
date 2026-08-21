@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ device_name }} — Setup{% endblock %}
+{% block content %}
+
+<div id="steps">
+
+  <!-- Step 1: WiFi (only shown while the device runs its setup AP) -->
+  <div class="card step" id="step-wifi" hidden>
+    <h2><span class="stepnum">1</span> Connect to your WiFi</h2>
+    <ul id="wifi-list" class="netlist"></ul>
+    <button id="wifi-rescan" type="button">Rescan</button>
+    <div id="wifi-join" hidden>
+      <p id="wifi-chosen"></p>
+      <label>Password
+        <input type="password" id="wifi-psk" autocomplete="off">
+      </label>
+      <button id="wifi-connect" class="primary" type="button">Connect</button>
+    </div>
+    <label>Network not listed?
+      <span class="manual-row">
+        <input type="text" id="wifi-manual" placeholder="Network name (SSID)">
+        <button id="wifi-manual-use" type="button">Use</button>
+      </span>
+    </label>
+    <p class="hint" id="wifi-msg" hidden></p>
+  </div>
+
+  <!-- Shown right after credentials are submitted -->
+  <div class="card step" id="step-handoff" hidden>
+    <h2>Connecting…</h2>
+    <p>The setup network is shutting down while the display joins
+      <b id="handoff-ssid"></b>.</p>
+    <p><b>Reconnect your phone to your own WiFi</b>, then open
+      <a href="http://nowplaying.local/">http://nowplaying.local</a> to
+      continue setup.</p>
+    <p class="hint">If the display shows a “Problem” screen, the password was
+      wrong — rejoin the setup network and try again.</p>
+  </div>
+
+  <!-- Step 2: Plex -->
+  <div class="card step" id="step-plex" hidden>
+    <h2><span class="stepnum">2</span> Find your Plex server</h2>
+    <div class="picker">
+      <div class="row">
+        <button id="plex-scan" type="button">Find servers</button>
+        <button id="plex-signin" type="button">Sign in with Plex</button>
+      </div>
+      <ul id="plex-candidates" hidden></ul>
+      <div id="plex-link" hidden>
+        <p>Enter this code at <b>plex.tv/link</b> (it is also on the display):</p>
+        <div id="plex-code" class="linkcode"></div>
+        <p class="hint" id="plex-link-status">Waiting for you to enter the code…</p>
+      </div>
+      <label>Or enter the address yourself
+        <span class="manual-row">
+          <input type="text" id="plex-manual" placeholder="192.168.1.10:32400">
+          <button id="plex-use" type="button">Use</button>
+        </span>
+      </label>
+      <p class="hint" id="plex-picker-msg" hidden></p>
+    </div>
+  </div>
+
+  <!-- Step 3: preferences -->
+  <div class="card step" id="step-prefs" hidden>
+    <h2><span class="stepnum">3</span> Display preferences</h2>
+    <label>Seconds to show each item
+      <input type="number" data-path="display.cycle_seconds" min="2" max="3600">
+    </label>
+    <div class="row">
+      <label>Brightness
+        <input type="number" data-path="display.brightness_normal" min="1" max="100">
+      </label>
+    </div>
+    <div class="row">
+      <label>Display on from
+        <input type="time" data-path="display.schedule_start">
+      </label>
+      <label>until
+        <input type="time" data-path="display.schedule_stop">
+      </label>
+    </div>
+    <p class="hint">Set both to 00:00 to keep the display on around the clock.
+      Everything can be changed later at http://nowplaying.local.</p>
+    <button id="finish" class="primary" type="button">Finish setup</button>
+  </div>
+
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='picker.js') }}"></script>
+<script src="{{ url_for('static', filename='setup.js') }}"></script>
+{% endblock %}
