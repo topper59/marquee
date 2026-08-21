@@ -7,8 +7,6 @@ from typing import Optional
 
 from PIL import Image
 
-from nowplaying import config
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session model
@@ -64,12 +62,12 @@ class State:
             if self._index_of(self.current_key) is None:
                 self.current_key = new_sessions[0].session_key if new_sessions else None
 
-    def maybe_cycle(self):
+    def maybe_cycle(self, cycle_seconds: float):
         with self.lock:
             if len(self.sessions) <= 1:
                 return False
             now = time.monotonic()
-            if now - self.last_cycle >= config.CYCLE_SECONDS:
+            if now - self.last_cycle >= cycle_seconds:
                 i = self._index_of(self.current_key)
                 i = 0 if i is None else (i + 1) % len(self.sessions)
                 self.current_key = self.sessions[i].session_key

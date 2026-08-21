@@ -1,4 +1,9 @@
-"""Home Assistant client and the dim-state poller thread."""
+"""Home Assistant client and the dim-state poller thread.
+
+Optional integration: when disabled or unconfigured the poller idles and the
+panel simply never dims. The client is (re)built whenever the HA section of
+the config changes, so enabling it from the web UI needs no restart.
+"""
 
 import logging
 import threading
@@ -6,15 +11,15 @@ from typing import Optional
 
 import requests
 
-from nowplaying import config
 from nowplaying.display.state import State
 
 log = logging.getLogger("plex-matrix")
 
 
 class HomeAssistant:
-    def __init__(self, base_url: str, token: str):
+    def __init__(self, base_url: str, token: str, timeout: float = 4):
         self.base_url = base_url
+        self.timeout = timeout
         self.s = requests.Session()
         self.s.headers.update({
             "Authorization": f"Bearer {token}",
@@ -25,7 +30,7 @@ class HomeAssistant:
         try:
             r = self.s.get(
                 f"{self.base_url}/api/states/{entity_id}",
-                timeout=config.HTTP_TIMEOUT,
+                timeout=self.timeout,
             )
             r.raise_for_status()
             return r.json().get("state")
@@ -43,13 +48,29 @@ class HomeAssistant:
         return tv_on and after_sunset
 
 
-def ha_poller_loop(ha: HomeAssistant, state: State, stop: threading.Event):
+def ha_poller_loop(config, state: State, stop: threading.Event):
+    client = None
+    client_sig = None
     while not stop.is_set():
-        try:
-            dim = ha.should_dim(config.HA_TV_ENTITY)
+        hc = config.get()["ha"]
+        configured = hc["enabled"] and hc["url"] and hc["token"] and hc["tv_entity"]
+        if not configured:
+            if client is not None:
+                client = client_sig = None
+                log.info("HA integration disabled — dim off")
             with state.lock:
-                state.dim = dim
-            log.debug("Dim state updated: %s", dim)
-        except Exception as e:
-            log.warning("HA poll cycle failed: %s", e)
-        stop.wait(config.HA_POLL_SECONDS)
+                state.dim = False
+        else:
+            sig = (hc["url"], hc["token"])
+            if sig != client_sig:
+                client = HomeAssistant(hc["url"], hc["token"])
+                client_sig = sig
+                log.info("HA integration active (%s)", hc["url"])
+            try:
+                dim = client.should_dim(hc["tv_entity"])
+                with state.lock:
+                    state.dim = dim
+                log.debug("Dim state updated: %s", dim)
+            except Exception as e:
+                log.warning("HA poll cycle failed: %s", e)
+        stop.wait(hc["poll_seconds"])

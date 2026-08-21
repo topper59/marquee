@@ -17,12 +17,14 @@ from nowplaying.display.matrix import (
 log = logging.getLogger("plex-matrix")
 
 
-def is_within_schedule() -> bool:
-    """Return True if the current local time falls within the active window."""
-    if not config.SCHEDULE_ENABLE:
+def is_within_schedule(start: dtime, stop: dtime) -> bool:
+    """Return True if the current local time falls within the active window.
+
+    start == stop == midnight means scheduling is disabled (always on).
+    """
+    if start == stop == dtime(0, 0):
         return True
     now = datetime.now().time().replace(second=0, microsecond=0)
-    start, stop = config.SCHEDULE_START, config.SCHEDULE_STOP
     if start <= stop:
         # Normal window: e.g. 07:00 – 23:00 (stop=00:00 treated as end-of-day)
         # Special case: stop at midnight means active until end of day
@@ -53,7 +55,9 @@ def make_paused_poster(img: Image.Image) -> Image.Image:
     return out
 
 
-def render_loop(matrix: RGBMatrix, state: State, stop: threading.Event):
+def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.Event):
+    from nowplaying.config import parse_hhmm
+
     _font_big, _font_sm, _font_sub, _font_clk = load_fonts()
     title_y, sub_y, user_y, rem_y = compute_text_layout(
         [_font_big, _font_sub, _font_sm, _font_sm])
@@ -71,10 +75,25 @@ def render_loop(matrix: RGBMatrix, state: State, stop: threading.Event):
     scroll_pause_until = 0.0
     last_session_key  = None
     last_frame        = time.monotonic()
-    last_brightness   = config.BRIGHTNESS_NORMAL
+    last_brightness   = None
     was_active        = True   # track transitions for log clarity
 
+    # Display settings are re-derived only when the config generation moves,
+    # keeping the per-frame cost at one integer compare.
+    cfg_gen = None
+    cycle_seconds = brightness_normal = brightness_dim = None
+    sched_start = sched_stop = dtime(0, 0)
+
     while not stop.is_set():
+        if cfg_gen != config_store.generation:
+            cfg_gen = config_store.generation
+            disp = config_store.get()["display"]
+            cycle_seconds     = disp["cycle_seconds"]
+            brightness_normal = disp["brightness_normal"]
+            brightness_dim    = disp["brightness_dim"]
+            sched_start = parse_hhmm(disp["schedule_start"])
+            sched_stop  = parse_hhmm(disp["schedule_stop"])
+
         now = time.monotonic()
         dt = now - last_frame
         if dt < config.SCROLL_FRAME_MS / 1000:
@@ -82,16 +101,17 @@ def render_loop(matrix: RGBMatrix, state: State, stop: threading.Event):
         last_frame = time.monotonic()
 
         # ── Schedule gate ──────────────────────────────────────────────────
-        active = is_within_schedule()
+        active = is_within_schedule(sched_start, sched_stop)
         if not active:
             if was_active:
                 matrix.Clear()
                 log.info("Schedule: outside window, display off (%s–%s)",
-                         config.SCHEDULE_START.strftime("%H:%M"),
-                         config.SCHEDULE_STOP.strftime("%H:%M"))
+                         sched_start.strftime("%H:%M"),
+                         sched_stop.strftime("%H:%M"))
             was_active = False
-            # Sleep longer while blanked — no need to spin at 20fps
-            stop.wait(30)
+            # Sleep briefly while blanked — long enough to stop spinning at
+            # 20fps, short enough that schedule edits apply promptly.
+            stop.wait(5)
             continue
 
         if not was_active:
@@ -99,10 +119,10 @@ def render_loop(matrix: RGBMatrix, state: State, stop: threading.Event):
         was_active = True
 
         # ── Brightness ─────────────────────────────────────────────────────
-        state.maybe_cycle()
+        state.maybe_cycle(cycle_seconds)
         with state.lock:
             should_dim = state.dim
-        target_brightness = config.BRIGHTNESS_DIM if should_dim else config.BRIGHTNESS_NORMAL
+        target_brightness = brightness_dim if should_dim else brightness_normal
         if target_brightness != last_brightness:
             matrix.brightness = target_brightness
             last_brightness = target_brightness

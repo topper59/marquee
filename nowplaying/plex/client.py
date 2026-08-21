@@ -19,8 +19,10 @@ log = logging.getLogger("plex-matrix")
 # Plex client
 # ─────────────────────────────────────────────────────────────────────────────
 class Plex:
-    def __init__(self, base_url: str, token: str = "", verify_ssl: bool = False):
+    def __init__(self, base_url: str, token: str = "", verify_ssl: bool = False,
+                 timeout: float = 4):
         self.base_url = base_url
+        self.timeout = timeout
         self.s = requests.Session()
         self.s.verify = verify_ssl
         if not verify_ssl:
@@ -32,7 +34,7 @@ class Plex:
             self.s.headers["X-Plex-Token"] = token
 
     def get_activity(self) -> list[Session]:
-        r = self.s.get(f"{self.base_url}/status/sessions", timeout=config.HTTP_TIMEOUT)
+        r = self.s.get(f"{self.base_url}/status/sessions", timeout=self.timeout)
         r.raise_for_status()
         container = r.json().get("MediaContainer", {})
         sessions = []
@@ -87,7 +89,7 @@ class Plex:
                     "minSize": 1,
                     "upscale": 1,
                 },
-                timeout=config.HTTP_TIMEOUT,
+                timeout=self.timeout,
             )
             r.raise_for_status()
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -108,9 +110,22 @@ class Plex:
 # ─────────────────────────────────────────────────────────────────────────────
 # Fetcher thread
 # ─────────────────────────────────────────────────────────────────────────────
-def fetcher_loop(plex: Plex, state: State, stop: threading.Event):
+def fetcher_loop(config, state: State, stop: threading.Event):
+    plex = None
+    plex_sig = None
     failures = 0
     while not stop.is_set():
+        pc = config.get()["plex"]
+        if not pc["url"]:
+            # Unprovisioned: nothing to poll yet.
+            state.replace([])
+            stop.wait(pc["poll_seconds"])
+            continue
+        sig = (pc["url"], pc["token"], pc["verify_ssl"], pc["http_timeout"])
+        if sig != plex_sig:
+            plex = Plex(pc["url"], pc["token"], pc["verify_ssl"], pc["http_timeout"])
+            plex_sig = sig
+            failures = 0
         try:
             sessions = plex.get_activity()
             state.replace(sessions)
@@ -129,8 +144,8 @@ def fetcher_loop(plex: Plex, state: State, stop: threading.Event):
         except Exception as e:
             failures += 1
             log.warning("Fetch cycle failed (%d in a row): %s", failures, e)
-            if failures == config.STALE_AFTER:
+            if failures == pc["stale_after_failures"]:
                 log.warning("Plex unreachable for ~%ds — clearing the display",
-                            failures * config.POLL_SECONDS)
+                            failures * pc["poll_seconds"])
                 state.replace([])
-        stop.wait(config.POLL_SECONDS)
+        stop.wait(pc["poll_seconds"])

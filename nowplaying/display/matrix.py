@@ -5,18 +5,23 @@ from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
 from nowplaying import config
 
 
-def build_matrix() -> RGBMatrix:
+def build_matrix(mcfg: dict, brightness: int) -> RGBMatrix:
+    """Construct the matrix from the config's `matrix` section.
+
+    RGBMatrixOptions are constructor-only — changing any of them requires a
+    service restart, which the settings UI arranges.
+    """
     opts = RGBMatrixOptions()
-    opts.rows = 64
-    opts.cols = 128
+    opts.rows = mcfg["rows"]
+    opts.cols = mcfg["cols"]
     opts.chain_length = 1
     opts.parallel = 1
-    opts.hardware_mapping = "adafruit-hat-pwm"
-    opts.gpio_slowdown = 4
-    opts.brightness = config.BRIGHTNESS_NORMAL
-    opts.pwm_bits = 11
-    opts.pwm_lsb_nanoseconds = 130
-    opts.limit_refresh_rate_hz = 120
+    opts.hardware_mapping = mcfg["hardware_mapping"]
+    opts.gpio_slowdown = mcfg["gpio_slowdown"]
+    opts.brightness = brightness
+    opts.pwm_bits = mcfg["pwm_bits"]
+    opts.pwm_lsb_nanoseconds = mcfg["pwm_lsb_nanoseconds"]
+    opts.limit_refresh_rate_hz = mcfg["limit_refresh_rate_hz"]
     opts.drop_privileges = False
     opts.show_refresh_rate = False
     opts.scan_mode = 0
