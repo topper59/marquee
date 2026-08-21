@@ -5,11 +5,13 @@ Runs as a daemon thread inside the display process via werkzeug's make_server
 app.py wraps startup, and all handlers only touch the Config/State objects.
 """
 
+import hashlib
 import logging
+import secrets
 import subprocess
 import threading
 
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, session
 
 from flask import redirect
 
@@ -48,9 +50,49 @@ def _set_path(d, path, value):
 
 def create_app(config, state, netmgr=None) -> Flask:
     app = Flask(__name__)
+    # Sessions only carry the "authed" flag; a fresh key per process simply
+    # re-asks for the password after a restart.
+    app.secret_key = secrets.token_hex(32)
 
     def in_ap_mode() -> bool:
         return netmgr is not None and netmgr.in_ap_mode()
+
+    # ── Optional settings password ────────────────────────────────────────
+    @app.before_request
+    def require_password():
+        stored = config.get()["web"]["password"]
+        if (not stored or in_ap_mode() or session.get("authed")
+                or request.path == "/login"
+                or request.path.startswith("/static/")):
+            return None
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "password required"}), 401
+        return redirect("/login")
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        error = ""
+        if request.method == "POST":
+            given = hashlib.sha256(
+                request.form.get("password", "").encode()).hexdigest()
+            stored = config.get()["web"]["password"] or ""
+            if secrets.compare_digest(given, stored):
+                session["authed"] = True
+                return redirect("/")
+            error = "Wrong password"
+        cfg = config.get()
+        return render_template("login.html", error=error,
+                               device_name=cfg["device"]["name"],
+                               version=nowplaying.__version__)
+
+    @app.post("/api/password")
+    def set_password():
+        body = request.get_json(silent=True) or {}
+        pw = str(body.get("password") or "")
+        config.update({"web.password":
+                       hashlib.sha256(pw.encode()).hexdigest() if pw else None})
+        session["authed"] = True
+        return jsonify({"ok": True, "enabled": bool(pw)})
 
     @app.before_request
     def captive_redirect():

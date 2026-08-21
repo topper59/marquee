@@ -75,10 +75,36 @@ async function restart() {
   setTimeout(loadSettings, 8000);
 }
 
+async function setPassword(pw) {
+  const res = await fetch("/api/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: pw }),
+  });
+  const out = await res.json();
+  if (!res.ok) { toast(out.error || "Failed", true); return; }
+  $("#pw-new").value = "";
+  $("#pw-state").textContent = out.enabled ? "(enabled)" : "(off)";
+  toast(out.enabled ? "Password set" : "Password removed");
+}
+
+async function showPasswordState() {
+  const cfg = await (await fetch("/api/settings")).json();
+  $("#pw-state").textContent = cfg.web.password ? "(enabled)" : "(off)";
+}
+
 window.onServerSaved = showCurrentServer;
 
 $("#save").addEventListener("click", save);
 $("#restart").addEventListener("click", restart);
+$("#pw-set").addEventListener("click", () => {
+  const pw = $("#pw-new").value;
+  if (pw) setPassword(pw);
+});
+$("#pw-clear").addEventListener("click", () => {
+  if (confirm("Remove the settings password?")) setPassword("");
+});
+showPasswordState().catch(() => {});
 
 loadSettings().catch(() => toast("Could not load settings", true));
 showCurrentServer().catch(() => {});

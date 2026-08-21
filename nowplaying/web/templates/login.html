@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ device_name }} — Sign in{% endblock %}
+{% block content %}
+<div class="card" style="max-width: 380px; margin: 40px auto;">
+  <h2>Settings password</h2>
+  <form method="post" action="/login">
+    <label>Password
+      <input type="password" name="password" autofocus autocomplete="current-password">
+    </label>
+    {% if error %}<p class="hint" style="color: var(--danger)">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <button class="primary" type="submit">Sign in</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -9,9 +9,9 @@ Type=simple
 # Must start as root for GPIO; the script calls drop_privileges via librgbmatrix
 User=root
 WorkingDirectory=/opt/plex-matrix
-# Legacy env config; '-' so a missing file no longer blocks startup. Read only
-# as a migration source once /var/lib/nowplaying/config.json exists.
-EnvironmentFile=-/etc/plex-matrix.env
+# Config lives in /var/lib/nowplaying/config.json. The legacy env file at
+# /etc/plex-matrix.env is read directly (not via systemd) as a one-time
+# migration source when no config.json exists.
 ExecStart=/opt/plex-matrix/venv/bin/python -m nowplaying
 # Creates /var/lib/nowplaying for config.json
 StateDirectory=nowplaying
