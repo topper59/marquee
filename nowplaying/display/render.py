@@ -1,6 +1,7 @@
 """The render loop — owns all drawing, runs on the main thread."""
 
 import time
+import socket
 import logging
 import threading
 from datetime import datetime, time as dtime
@@ -9,6 +10,7 @@ from PIL import Image, ImageDraw
 from rgbmatrix import RGBMatrix, graphics
 
 from nowplaying import config
+from nowplaying.netmgr import local_ip
 from nowplaying.display.state import State, DisplayMode
 from nowplaying.display.matrix import (
     load_fonts, text_width, compute_text_layout, wrap_two_lines, format_remaining,
@@ -36,6 +38,15 @@ def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict):
         _centered(canvas, _font_sm, 26, GRAY, "Join WiFi network:")
         _centered(canvas, _font_sm, 38, (235, 235, 235), payload.get("ssid", ""))
         _centered(canvas, _font_sm, 52, GRAY, "then visit " + payload.get("url", "10.42.0.1"))
+
+    elif mode is DisplayMode.NEEDS_SETUP:
+        # Online, but no Plex server chosen yet — point at the web UI. Both
+        # the mDNS name and the raw IP are shown because .local resolution
+        # fails on some networks and phones.
+        _centered(canvas, _font_big, 14, AMBER, "Setup")
+        _centered(canvas, _font_sm, 30, GRAY, "Open in a browser:")
+        _centered(canvas, _font_sm, 42, (235, 235, 235), payload.get("host", ""))
+        _centered(canvas, _font_sm, 54, GRAY, payload.get("ip", ""))
 
     elif mode is DisplayMode.CONNECTING:
         dots = "." * (1 + int(time.monotonic() * 2) % 3)
@@ -138,16 +149,24 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
     cfg_gen = None
     cycle_seconds = brightness_normal = brightness_dim = None
     sched_start = sched_stop = dtime(0, 0)
+    needs_setup = False
+    setup_addr = {"host": "", "ip": ""}
+    addr_checked = 0.0
 
     while not stop.is_set():
         if cfg_gen != config_store.generation:
             cfg_gen = config_store.generation
-            disp = config_store.get()["display"]
+            snapshot = config_store.get()
+            disp = snapshot["display"]
             cycle_seconds     = disp["cycle_seconds"]
             brightness_normal = disp["brightness_normal"]
             brightness_dim    = disp["brightness_dim"]
             sched_start = parse_hhmm(disp["schedule_start"])
             sched_stop  = parse_hhmm(disp["schedule_stop"])
+            # Derived from the Plex URL rather than the `provisioned` flag, so
+            # the panel starts working the moment a server is picked — and
+            # says so again if that server is ever cleared.
+            needs_setup = not snapshot["plex"]["url"]
 
         now = time.monotonic()
         dt = now - last_frame
@@ -160,6 +179,14 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
         # holding the reset button must see the panel respond regardless of
         # the display-off window. ~2fps is plenty for these.
         mode, payload = state.get_mode()
+        if mode is DisplayMode.NORMAL and needs_setup:
+            # Synthesized here rather than written into State: netmgr and the
+            # reset button stay the only owners of the real mode.
+            if now - addr_checked > 10:
+                addr_checked = now
+                setup_addr = {"host": f"{socket.gethostname()}.local",
+                              "ip": local_ip()}
+            mode, payload = DisplayMode.NEEDS_SETUP, setup_addr
         if mode is not DisplayMode.NORMAL:
             if target := (payload.get("brightness") or brightness_normal):
                 if target != last_brightness:

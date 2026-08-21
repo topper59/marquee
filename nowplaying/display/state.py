@@ -14,6 +14,7 @@ class DisplayMode(Enum):
     rest are full-screen status pages owned by provisioning/auth flows."""
     NORMAL     = "normal"
     SETUP      = "setup"        # AP up: shows SSID + portal URL
+    NEEDS_SETUP = "needs_setup"  # online but no Plex server yet: shows address
     CONNECTING = "connecting"   # joining WiFi
     LINK_CODE  = "link_code"    # plex.tv/link code entry
     ERROR      = "error"        # short failure text

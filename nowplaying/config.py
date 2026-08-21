@@ -92,7 +92,10 @@ def defaults() -> dict:
             "poll_seconds": 60,
         },
         "network": {
-            "manage": False,
+            # On by default: an out-of-box or factory-reset device with no
+            # WiFi of its own must raise its setup AP unprompted. Devices
+            # migrated from the env-file era get False (see migration).
+            "manage": True,
             "ap_ssid_prefix": "NowPlaying-Setup",
             "join_timeout_s": 45,
             "boot_connect_timeout_s": 90,
@@ -274,6 +277,9 @@ def _migrate_legacy_env(env_path: str, data: dict) -> bool:
     if _get_path(data, "ha.token"):
         _set_path(data, "ha.enabled", True)
     data["provisioned"] = True
+    # An upgraded device already has working WiFi set up by other means;
+    # never take its network over on the strength of a version bump.
+    _set_path(data, "network.manage", False)
     return True
 
 

@@ -106,6 +106,9 @@ with tempfile.TemporaryDirectory() as td:
     check("defaults load", d["display"]["cycle_seconds"] == 10)
     check("client id generated", len(d["device"]["client_id"]) == 36)
     check("unprovisioned by default", d["provisioned"] is False)
+    # A fresh or factory-reset device must raise its own setup AP.
+    check("network managed by default", d["network"]["manage"] is True)
+    check("no plex server by default", d["plex"]["url"] == "")
     check("file written 0600", oct(os.stat(path).st_mode & 0o777) == "0o600")
 
     gen0 = c.generation
@@ -157,6 +160,7 @@ with tempfile.TemporaryDirectory() as td:
     check("legacy ha url default kept", md["ha"]["url"] == "https://ha.example.com")
     check("legacy tv entity default kept", md["ha"]["tv_entity"] == "media_player.living_room_tv")
     check("migrated device provisioned", md["provisioned"] is True)
+    check("migration leaves network alone", md["network"]["manage"] is False)
     check("unknown env keys ignored", "TAUTULLI_URL" not in json.dumps(md))
 
     # Factory-reset marker suppresses migration
@@ -219,7 +223,7 @@ with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
     cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     nc = Config(os.path.join(td, "net.json"))
-    nc.update({"network.manage": True, "network.join_timeout_s": 10})
+    nc.update({"network.join_timeout_s": 10})
     fake = FakeNM()
     nstate = State()
     nstop = threading.Event()

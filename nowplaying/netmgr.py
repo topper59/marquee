@@ -53,6 +53,24 @@ def _unescape_nmcli(field: str) -> str:
     return field.replace("\\:", ":").replace("\\\\", "\\")
 
 
+def local_ip() -> str:
+    """This host's LAN address, without shelling out to nmcli.
+
+    Opening a UDP socket toward an off-link address sends no packets; it just
+    makes the kernel pick the route it would use, which is the interface the
+    user can reach the web UI on.
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))   # TEST-NET-1, never routed anywhere
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
 class NetManager(threading.Thread):
     def __init__(self, config, state: State, stop: threading.Event,
                  run_cmd=default_run_cmd):
