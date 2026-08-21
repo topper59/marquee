@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NowPlaying{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">▶</span>
+      <h1>{{ device_name }}</h1>
+    </div>
+    <span class="version">v{{ version }}</span>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toast" hidden></div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

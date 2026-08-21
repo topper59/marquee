@@ -41,6 +41,16 @@ def main():
     state  = State()
     stop   = threading.Event()
 
+    web_server = None
+    if cfg["web"]["enabled"]:
+        try:
+            from nowplaying.web.server import start_web
+            web_server = start_web(config, state)
+        except Exception:
+            # The panel must keep working even if the web UI cannot start
+            # (port taken, missing dependency, …).
+            log.exception("Web UI failed to start — continuing without it")
+
     def handle_signal(signum, frame):
         log.info("Signal %d received, stopping", signum)
         stop.set()
@@ -57,6 +67,8 @@ def main():
         render_loop(matrix, config, state, stop)
     finally:
         stop.set()
+        if web_server is not None:
+            web_server.shutdown()
         fetcher.join(timeout=2)
         ha_poller.join(timeout=2)
         matrix.Clear()

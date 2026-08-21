@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}{{ device_name }} — Settings{% endblock %}
+{% block content %}
+
+<div id="now-playing" class="card" hidden>
+  <h2>Now playing</h2>
+  <ul id="np-list"></ul>
+</div>
+
+<form id="settings" onsubmit="return false">
+
+  <div class="card">
+    <h2>Display</h2>
+    <label>Seconds to show each item
+      <input type="number" data-path="display.cycle_seconds" min="2" max="3600">
+    </label>
+    <div class="row">
+      <label>Brightness
+        <input type="number" data-path="display.brightness_normal" min="1" max="100">
+      </label>
+      <label>Dimmed brightness
+        <input type="number" data-path="display.brightness_dim" min="1" max="100">
+      </label>
+    </div>
+    <div class="row">
+      <label>Display on from
+        <input type="time" data-path="display.schedule_start">
+      </label>
+      <label>until
+        <input type="time" data-path="display.schedule_stop">
+      </label>
+    </div>
+    <p class="hint">The panel is dark outside this window. Set both to 00:00 to
+      keep it on around the clock; “until 00:00” means midnight.</p>
+  </div>
+
+  <div class="card">
+    <h2>Plex server</h2>
+    <label>Server URL
+      <input type="text" data-path="plex.url" placeholder="https://192.168.1.10:32400">
+    </label>
+    <label>Access token <span class="hint-inline">(blank if your server allows this device without one)</span>
+      <input type="password" data-path="plex.token" autocomplete="off">
+    </label>
+    <label class="check">
+      <input type="checkbox" data-path="plex.verify_ssl"> Verify TLS certificate
+    </label>
+    <label>Poll interval (seconds)
+      <input type="number" data-path="plex.poll_seconds" min="1" max="3600">
+    </label>
+  </div>
+
+  <div class="card">
+    <h2>Home Assistant <span class="tag">optional</span></h2>
+    <p class="hint">Dims the panel when your TV is on after sunset.</p>
+    <label class="check">
+      <input type="checkbox" data-path="ha.enabled"> Enable Home Assistant dimming
+    </label>
+    <label>URL
+      <input type="text" data-path="ha.url" placeholder="https://homeassistant.local:8123">
+    </label>
+    <label>Long-lived access token
+      <input type="password" data-path="ha.token" autocomplete="off">
+    </label>
+    <label>TV media player entity
+      <input type="text" data-path="ha.tv_entity" placeholder="media_player.living_room_tv">
+    </label>
+  </div>
+
+  <div class="card">
+    <h2>Device</h2>
+    <label>Name
+      <input type="text" data-path="device.name" maxlength="32">
+    </label>
+    <label>Log level
+      <select data-path="log_level">
+        <option>DEBUG</option><option>INFO</option>
+        <option>WARNING</option><option>ERROR</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="actions">
+    <button id="save" class="primary">Save</button>
+    <button id="restart" class="danger" title="Restart the display service">Restart device app</button>
+  </div>
+  <p id="restart-note" class="hint" hidden>A saved change needs a restart to take
+    effect — use the restart button when ready.</p>
+</form>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}
