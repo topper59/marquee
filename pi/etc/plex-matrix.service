@@ -1,15 +1,20 @@
 [Unit]
 Description=Plex Now Playing LED Matrix Display
-After=network-online.target
-Wants=network-online.target
+# NetworkManager only, NOT network-online: an unprovisioned device has no
+# network to wait for — it must start and bring up its own setup AP.
+After=NetworkManager.service
 
 [Service]
 Type=simple
 # Must start as root for GPIO; the script calls drop_privileges via librgbmatrix
 User=root
 WorkingDirectory=/opt/plex-matrix
-EnvironmentFile=/etc/plex-matrix.env
-ExecStart=/opt/plex-matrix/venv/bin/python /opt/plex-matrix/plex_matrix.py
+# Legacy env config; '-' so a missing file no longer blocks startup. Read only
+# as a migration source once /var/lib/nowplaying/config.json exists.
+EnvironmentFile=-/etc/plex-matrix.env
+ExecStart=/opt/plex-matrix/venv/bin/python -m nowplaying
+# Creates /var/lib/nowplaying for config.json
+StateDirectory=nowplaying
 Restart=on-failure
 RestartSec=5
 # Pin the process to the isolated core (matches isolcpus=3 in cmdline.txt)
@@ -21,4 +26,3 @@ CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_RAWIO CAP_DAC_OVERRIDE CAP_NET_BIND_S
 
 [Install]
 WantedBy=multi-user.target
-
