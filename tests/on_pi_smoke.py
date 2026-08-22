@@ -270,6 +270,50 @@ with tempfile.TemporaryDirectory() as td:
     nstop.set()
     nm.join(timeout=5)
 
+print("web link flow")
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
+    import nowplaying.web.server as websrv
+
+    # Stub the network calls: this exercises our state handling, not plex.tv.
+    websrv.probe_server = lambda url, token="", timeout=4: {
+        "ok": True, "url": "https://server:32400", "machine_id": "abc",
+        "auth_required": False,
+    }
+    websrv.plex_auth = types.SimpleNamespace(
+        pin_create=lambda cid: {"id": 1, "code": "WXYZ"},
+        pin_poll=lambda cid, pid: {"token": "", "expired": False},
+        account_servers=lambda cid, tok: [],
+    )
+
+    wc = Config(os.path.join(td, "web.json"))
+    wstate = State()
+    client = websrv.create_app(wc, wstate).test_client()
+
+    client.post("/api/plex/auth/start", json={})
+    check("link code goes on the panel", wstate.get_mode()[0] is DisplayMode.LINK_CODE)
+    check("link code payload carries expiry",
+          wstate.get_mode()[1].get("expires_at", 0) > time.monotonic())
+
+    # The reported bug: abandon sign-in, add the server by hand instead.
+    r = client.post("/api/plex/select", json={"url": "server:32400"})
+    check("manual add saves", r.get_json()["saved"] is True)
+    check("manual add clears the link code",
+          wstate.get_mode()[0] is DisplayMode.NORMAL)
+    check("stale poll is rejected",
+          client.post("/api/plex/auth/poll").status_code == 400)
+
+    client.post("/api/plex/auth/start", json={})
+    client.post("/api/plex/auth/cancel")
+    check("cancel clears the link code", wstate.get_mode()[0] is DisplayMode.NORMAL)
+
+    # A setup screen raised by netmgr must survive an unrelated link teardown.
+    wstate.set_mode(DisplayMode.SETUP, ssid="X", url="10.42.0.1")
+    client.post("/api/plex/auth/cancel")
+    check("cancel does not stomp other screens",
+          wstate.get_mode()[0] is DisplayMode.SETUP)
+
 print("parse_hhmm")
 check("parses", parse_hhmm("07:30").hour == 7)
 for bad_t in ("7", "07:60", "24:00", "a:b", ""):

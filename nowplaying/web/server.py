@@ -10,6 +10,7 @@ import logging
 import secrets
 import subprocess
 import threading
+import time
 
 from flask import Flask, jsonify, request, render_template, session
 
@@ -27,6 +28,11 @@ from nowplaying.plex.discovery import gdm_discover, probe_server
 CAPTIVE_PROBES = ("/generate_204", "/gen_204", "/hotspot-detect.html",
                   "/library/test/success.html", "/connecttest.txt",
                   "/ncsi.txt", "/success.txt", "/canonical.html")
+
+# How long a link code stays on the panel without being claimed. Plex's own
+# PIN lifetime is ~15 minutes; expire slightly after so the panel never
+# outlives a code that could still work.
+PIN_PANEL_TTL = 16 * 60
 
 log = logging.getLogger("plex-matrix")
 
@@ -183,6 +189,19 @@ def create_app(config, state, netmgr=None) -> Flask:
     # user picks a server, then it is saved to config and cleared.
     auth = {"lock": threading.Lock(), "pin_id": None, "candidate": None, "token": ""}
 
+    def _end_link_flow():
+        """Drop any pending PIN and take the code off the panel.
+
+        Every exit from the link flow routes through here — claimed, expired,
+        cancelled, or abandoned because the user configured the server some
+        other way. Missing one of those paths is what used to strand the code
+        on the display until a restart.
+        """
+        with auth["lock"]:
+            auth["pin_id"] = None
+            auth["candidate"] = None
+        state.clear_mode(DisplayMode.LINK_CODE)
+
     def _save_server(probe: dict, token: str, name: str = ""):
         config.update({
             "plex.url": probe["url"],
@@ -190,6 +209,7 @@ def create_app(config, state, netmgr=None) -> Flask:
             "plex.machine_id": probe.get("machine_id", ""),
             "plex.server_name": name,
         })
+        _end_link_flow()
 
     @app.post("/api/plex/discover")
     def plex_discover():
@@ -222,8 +242,16 @@ def create_app(config, state, netmgr=None) -> Flask:
             auth["pin_id"] = pin["id"]
             auth["candidate"] = body.get("server") or None  # {url, name, machine_id}
             auth["token"] = ""
-        state.set_mode(DisplayMode.LINK_CODE, code=pin["code"])
+        # Panel expiry backstops the browser: if the user simply walks away,
+        # the code clears itself rather than sitting there indefinitely.
+        state.set_mode(DisplayMode.LINK_CODE, code=pin["code"],
+                       expires_at=time.monotonic() + PIN_PANEL_TTL)
         return jsonify({"code": pin["code"]})
+
+    @app.post("/api/plex/auth/cancel")
+    def plex_auth_cancel():
+        _end_link_flow()
+        return jsonify({"ok": True})
 
     @app.post("/api/plex/auth/poll")
     def plex_auth_poll():
@@ -238,17 +266,14 @@ def create_app(config, state, netmgr=None) -> Flask:
         except Exception as e:
             return jsonify({"error": f"could not reach plex.tv: {e}"}), 502
         if res["expired"]:
-            with auth["lock"]:
-                auth["pin_id"] = None
-            state.set_mode(DisplayMode.NORMAL)
+            _end_link_flow()
             return jsonify({"claimed": False, "expired": True})
         token = res["token"]
         if not token:
             return jsonify({"claimed": False})
 
-        state.set_mode(DisplayMode.NORMAL)
+        _end_link_flow()
         with auth["lock"]:
-            auth["pin_id"] = None
             auth["token"] = token
 
         if candidate:

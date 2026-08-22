@@ -179,6 +179,10 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
         # holding the reset button must see the panel respond regardless of
         # the display-off window. ~2fps is plenty for these.
         mode, payload = state.get_mode()
+        if mode is DisplayMode.LINK_CODE and now > payload.get("expires_at", float("inf")):
+            log.info("Link code expired — clearing the panel")
+            state.clear_mode(DisplayMode.LINK_CODE)
+            mode, payload = state.get_mode()
         if mode is DisplayMode.NORMAL and needs_setup:
             # Synthesized here rather than written into State: netmgr and the
             # reset button stay the only owners of the real mode.

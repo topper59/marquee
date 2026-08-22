@@ -81,9 +81,24 @@ async function useCandidate(s, btn) {
   }
 }
 
+let linkTimer = null;
+
+/* Abandoning the link flow has to tell the device, or the code stays on the
+   panel after the user configures the server some other way. */
+async function cancelLink() {
+  clearInterval(linkTimer);
+  linkTimer = null;
+  const panel = $("#plex-link");
+  if (panel && !panel.hidden) {
+    panel.hidden = true;
+    try { await fetch("/api/plex/auth/cancel", { method: "POST" }); } catch {}
+  }
+}
+
 async function plexScan() {
   const btn = $("#plex-scan");
   btn.disabled = true; btn.textContent = "Scanning…";
+  await cancelLink();
   pickerMsg("");
   try {
     const out = await (await fetch("/api/plex/discover", { method: "POST" })).json();
@@ -96,8 +111,6 @@ async function plexScan() {
     btn.disabled = false; btn.textContent = "Find servers";
   }
 }
-
-let linkTimer = null;
 
 async function startLink(server) {
   clearInterval(linkTimer);
@@ -149,6 +162,7 @@ function bindPicker() {
   $("#plex-use").addEventListener("click", async () => {
     const url = $("#plex-manual").value.trim();
     if (!url) return;
+    await cancelLink();
     const probe = await (await fetch("/api/plex/probe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
