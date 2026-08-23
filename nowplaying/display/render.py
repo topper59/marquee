@@ -240,9 +240,28 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             t  = time.strftime("%I:%M %p")
             x  = (128 - text_width(_font_clk, t)) // 2
             graphics.DrawText(canvas, _font_clk, x, 13, clk_c, t)
-            msg = "Nothing playing"
-            x2  = (128 - text_width(_font_sm, msg)) // 2
-            graphics.DrawText(canvas, _font_sm, x2, 46, graphics.Color(60, 60, 60), msg)
+            # An unreachable server and an idle one look identical from here,
+            # but they are not: saying "Nothing playing" while Plex is down
+            # is a lie that sends people looking at the wrong thing. This is
+            # drawn inside the normal display rather than as a status page so
+            # it still honours the schedule and the dim flag — a notice that
+            # lights the panel at 3am would be worse than the lie.
+            with state.lock:
+                offline = state.plex_offline
+            if offline:
+                msg = "Can't reach Plex"
+                x2  = (128 - text_width(_font_sm, msg)) // 2
+                graphics.DrawText(canvas, _font_sm, x2, 44,
+                                  graphics.Color(*RED), msg)
+                hint = "check the server"
+                x3   = (128 - text_width(_font_sm, hint)) // 2
+                graphics.DrawText(canvas, _font_sm, x3, 55,
+                                  graphics.Color(70, 70, 70), hint)
+            else:
+                msg = "Nothing playing"
+                x2  = (128 - text_width(_font_sm, msg)) // 2
+                graphics.DrawText(canvas, _font_sm, x2, 46,
+                                  graphics.Color(60, 60, 60), msg)
         else:
             RX = 64
             sub_max_chars = 64 // 5
@@ -303,7 +322,10 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             user = (current.user or "")[:sub_max_chars]
             graphics.DrawText(canvas, _font_sm, RX + 1, user_y, user_c, user)
 
-            remaining = format_remaining(current.duration_ms, current.view_offset_ms)
+            # Interpolated, not the raw poll value — otherwise both of these
+            # visibly step every poll_seconds. See Session.live_offset_ms.
+            live_offset = current.live_offset_ms(now)
+            remaining = format_remaining(current.duration_ms, live_offset)
             if remaining:
                 graphics.DrawText(canvas, _font_sm, RX + 1, rem_y,
                                   graphics.Color(*config.REMAIN_FG), remaining)
@@ -313,7 +335,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             for bx in range(bar_x0, bar_x1 + 1):
                 for by in range(bar_y0, bar_y1 + 1):
                     canvas.SetPixel(bx, by, *config.PROGRESS_BG)
-            fill = int((bar_x1 - bar_x0) * current.progress)
+            fill = int((bar_x1 - bar_x0) * current.live_progress(now))
             for bx in range(bar_x0, bar_x0 + fill + 1):
                 for by in range(bar_y0, bar_y1 + 1):
                     canvas.SetPixel(bx, by, *config.PROGRESS_FG)

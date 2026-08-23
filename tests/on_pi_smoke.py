@@ -22,12 +22,16 @@ sys.modules["rgbmatrix"] = m
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import threading  # noqa: E402
+
 import nowplaying.config as cfgmod  # noqa: E402
 from nowplaying.config import Config, parse_hhmm  # noqa: E402
 from nowplaying.display.matrix import (  # noqa: E402
     wrap_two_lines, format_remaining, compute_text_layout,
 )
 from nowplaying.display.state import Session, State  # noqa: E402
+from nowplaying.plex import filters  # noqa: E402
+import nowplaying.plex.client as plexclient  # noqa: E402
 
 failures = 0
 
@@ -685,6 +689,182 @@ with tempfile.TemporaryDirectory() as td:
         check("unauthorized reset spawns nothing", not spawned)
     finally:
         websrv.subprocess.Popen = real_popen
+
+print("session filter")
+
+
+def fsess(user="u", player="p", mtype="episode", state="playing"):
+    return Session(session_key="k", title="t", subtitle="", user=user,
+                   progress=0.0, thumb_path="", state=state,
+                   player=player, media_type=mtype)
+
+
+check("empty filter is the identity",
+      len(filters.apply_filter([fsess(), fsess()], {})) == 2)
+check("absent rules pass everything", filters.allowed(fsess(), {"users": []}))
+check("allow-list keeps a match",
+      filters.allowed(fsess(user="James"), {"users": ["James"]}))
+check("allow-list drops a non-match",
+      not filters.allowed(fsess(user="Guest"), {"users": ["James"]}))
+check("matching ignores case and padding",
+      filters.allowed(fsess(user="James"), {"users": ["  jAMes "]}))
+check("comma string works as a rule",
+      filters.allowed(fsess(user="Ana"), {"users": "James, Ana"}))
+check("deny-list beats the allow-list",
+      not filters.allowed(fsess(user="James"),
+                          {"users": ["James"], "ignore_users": ["james"]}))
+check("player allow-list applies",
+      not filters.allowed(fsess(player="Kitchen iPad"),
+                          {"players": ["Living Room TV"]}))
+check("player deny-list applies",
+      not filters.allowed(fsess(player="Kitchen iPad"),
+                          {"ignore_players": ["kitchen ipad"]}))
+check("hide_paused drops a paused session",
+      not filters.allowed(fsess(state="paused"), {"hide_paused": True}))
+check("hide_paused keeps a playing one",
+      filters.allowed(fsess(state="playing"), {"hide_paused": True}))
+check("media type allow-list applies",
+      filters.allowed(fsess(mtype="movie"), {"media_types": ["movie"]}))
+check("media type allow-list excludes",
+      not filters.allowed(fsess(mtype="episode"), {"media_types": ["movie"]}))
+check("unknown types collapse to 'other'", filters.bucket("clip") == "other")
+check("'other' is selectable",
+      filters.allowed(fsess(mtype="trailer"), {"media_types": ["other"]}))
+# A session with no username must not be caught by a deny-list of real names.
+check("blank user is not denied by name",
+      filters.allowed(fsess(user=""), {"ignore_users": ["James"]}))
+check("but a blank user fails an allow-list",
+      not filters.allowed(fsess(user=""), {"users": ["James"]}))
+
+print("filter rules in config")
+with tempfile.TemporaryDirectory() as d:
+    fc = Config(os.path.join(d, "config.json"))
+    check("defaults show everything",
+          filters.apply_filter([fsess()], fc.get()["plex"]["filter"]) != [])
+    fc.update({"plex.filter.users": "James, Ana ,"})
+    check("comma string stored as a list",
+          fc.get()["plex"]["filter"]["users"] == ["James", "Ana"])
+    fc.update({"plex.filter.media_types": ["Movie", "episode"]})
+    check("media types folded to lower case",
+          fc.get()["plex"]["filter"]["media_types"] == ["movie", "episode"])
+    try:
+        fc.update({"plex.filter.media_types": "movie, banana"})
+        rejected = False
+    except ValueError:
+        rejected = True
+    check("an unknown media type is rejected", rejected)
+    check("and the stored rule is untouched",
+          fc.get()["plex"]["filter"]["media_types"] == ["movie", "episode"])
+    # An old config.json predates the whole subsection.
+    legacy = os.path.join(d, "legacy.json")
+    with open(legacy, "w") as f:
+        json.dump({"version": 1, "plex": {"url": "http://x:32400"}}, f)
+    check("upgrading a config without filters gets the defaults",
+          Config(legacy).get()["plex"]["filter"]["hide_paused"] is False)
+
+print("live playback position")
+now = time.monotonic()
+s_play = Session(session_key="k", title="t", subtitle="", user="u",
+                 progress=0.0, thumb_path="", duration_ms=600e3,
+                 view_offset_ms=60e3, state="playing", sampled_at=now)
+check("advances between polls",
+      abs(s_play.live_offset_ms(now + 5) - 65e3) < 1)
+check("progress advances with it",
+      abs(s_play.live_progress(now + 5) - (65e3 / 600e3)) < 1e-6)
+check("never runs past the end",
+      s_play.live_offset_ms(now + 10_000) == 600e3)
+check("progress clamps to 1", s_play.live_progress(now + 10_000) == 1.0)
+s_paused = Session(session_key="k", title="t", subtitle="", user="u",
+                   progress=0.0, thumb_path="", duration_ms=600e3,
+                   view_offset_ms=60e3, state="paused", sampled_at=now)
+check("a paused session holds still",
+      s_paused.live_offset_ms(now + 30) == 60e3)
+s_live = Session(session_key="k", title="t", subtitle="", user="u",
+                 progress=0.0, thumb_path="", duration_ms=0,
+                 view_offset_ms=0, state="playing", sampled_at=now)
+check("no duration means no progress", s_live.live_progress(now + 5) == 0.0)
+check("the time remaining counts down",
+      format_remaining(600e3, s_play.live_offset_ms(now + 5)) == "8m left")
+
+print("plex offline flag")
+
+with tempfile.TemporaryDirectory() as d:
+    oc = Config(os.path.join(d, "config.json"))
+    oc.update({"plex.url": "http://x:32400", "plex.poll_seconds": 1,
+               "plex.stale_after_failures": 2})
+    ostate = State()
+
+    class FakePlex:
+        """Fails on demand, so the stale threshold can be walked up to."""
+        mode = "ok"
+
+        def __init__(self, *a, **kw):
+            pass
+
+        def get_activity(self):
+            if FakePlex.mode == "fail":
+                raise OSError("connection refused")
+            return [fsess(user="James")]
+
+        def fetch_poster(self, *a, **kw):
+            return None
+
+    def run(passes):
+        """Let fetcher_loop make exactly `passes` polls, then fall out of it.
+
+        The consecutive-failure count lives in a local, so the threshold can
+        only be reached inside a single invocation — stopping and re-entering
+        would quietly reset it and the test would prove nothing.
+        """
+        stop = threading.Event()
+        left = [passes]
+        def wait(_timeout=None):
+            left[0] -= 1
+            if left[0] <= 0:
+                stop.set()
+            return stop.is_set()
+        stop.wait = wait
+        plexclient.fetcher_loop(oc, ostate, stop)
+
+    real_plex = plexclient.Plex
+    plexclient.Plex = FakePlex
+    try:
+        FakePlex.mode = "ok"
+        run(1)
+        check("a good poll leaves the panel online", ostate.plex_offline is False)
+        check("and the session lands", len(ostate.sessions) == 1)
+
+        # One short of the threshold is still "online" — the counter starts
+        # clean each invocation, so this really is a single failure.
+        FakePlex.mode = "fail"
+        run(1)
+        check("one failure is not yet an outage", ostate.plex_offline is False)
+
+        # Two failures in a row is exactly the configured threshold.
+        run(2)
+        check("the stale threshold marks it offline", ostate.plex_offline is True)
+        check("and the sessions are cleared", ostate.sessions == [])
+
+        FakePlex.mode = "ok"
+        run(1)
+        check("recovery clears the flag", ostate.plex_offline is False)
+
+        # A filter that excludes everything must not read as an outage.
+        oc.update({"plex.filter.users": "Nobody"})
+        run(1)
+        check("filtered-out sessions are not an outage",
+              ostate.sessions == [] and ostate.plex_offline is False)
+
+        # Clearing the server is a setup state, not a failure state.
+        oc.update({"plex.filter.users": ""})
+        FakePlex.mode = "fail"
+        run(2)
+        oc.update({"plex.url": ""})
+        run(1)
+        check("clearing the server clears the outage",
+              ostate.plex_offline is False)
+    finally:
+        plexclient.Plex = real_plex
 
 print("parse_hhmm")
 check("parses", parse_hhmm("07:30").hour == 7)

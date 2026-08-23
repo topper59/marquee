@@ -307,3 +307,31 @@ summary { color: var(--link); font-size: 14px; cursor: pointer; }
   box-shadow: 0 4px 24px rgba(60, 50, 20, .35);
 }
 #toast.error { background: var(--danger); }
+
+/* ── Filters page ───────────────────────────────────────────────────────── */
+.checkgroup {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: .1rem .75rem;
+  margin: .35rem 0 .25rem;
+}
+
+/* Names lifted straight from the running sessions, tappable to fill a rule. */
+.seenlist { list-style: none; margin: .25rem 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: .4rem; }
+.seenlist button {
+  font: inherit; font-size: .85rem;
+  padding: .2rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--field);
+  color: var(--text);
+  cursor: pointer;
+}
+.seenlist button:hover { border-color: var(--accent); color: var(--accent); }
+
+.offline {
+  margin: 0 0 .5rem;
+  color: var(--danger);
+  font-size: .9rem;
+}

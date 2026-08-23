@@ -112,9 +112,19 @@ sshd listens on 0.0.0.0, so the setup AP (`NowPlaying-Setup-<MAC4>`, open,
 Package `nowplaying/`, one process, one service. `app.py` builds `Config`,
 then starts threads over one lock-guarded `State`:
 
-- **`plex/client.py: fetcher_loop`** — polls `/status/sessions`, replaces the
-  session list, lazily fetches missing posters. Rebuilds its `Plex` client when
-  the config's plex section changes.
+- **`plex/client.py: fetcher_loop`** — polls `/status/sessions`, applies the
+  session filter, replaces the session list, lazily fetches missing posters.
+  Rebuilds its `Plex` client when the config's plex section changes. It owns
+  `State.plex_offline`, set once `stale_after_failures` polls in a row have
+  failed and cleared by any success, a server change, or the URL being
+  cleared.
+- **`plex/filters.py`** — pure, no imports from the rest of the package, so
+  `config.py` can borrow its vocabulary and the smoke test can drive it
+  directly. `plex.filter` holds allow-lists (`users`, `players`,
+  `media_types`) and deny-lists (`ignore_users`, `ignore_players`) plus
+  `hide_paused`; empty means "everything", deny beats allow, and matching is
+  case- and whitespace-insensitive because these are typed on a phone. Plex
+  item types collapse onto movie/episode/track/other.
 - **`ha.py: ha_poller_loop`** — optional Home Assistant integration; sets the
   single `dim` flag. The TV being on is always required; `ha.require_sunset`
   (default true) adds the `sun.sun below_horizon` condition. Idles when
@@ -151,7 +161,8 @@ only when `Config.generation` moves.
 ### Config
 
 `config.py` owns `/var/lib/nowplaying/config.json`: `get()` returns a deep
-snapshot, `update()` takes `{dotted.path: value}`, validates all-or-nothing,
+snapshot, `update()` takes `{dotted.path: value}` (nested subsections like
+`plex.filter.users` included), validates all-or-nothing,
 bumps `generation`, saves atomically. Validation is two-stage: per-path
 normalizers in `_VALIDATORS`, then `_validate_combined()` on a merged
 candidate for rules that span fields (a static address needs an address *and*
@@ -166,6 +177,11 @@ constants in config.py — edit and redeploy.
 
 ### Plex specifics
 
+- The house PMS routinely has several people streaming at once, so the
+  session filter is not hypothetical — an unfiltered panel cycles through
+  strangers' movies. `/api/status` reports `player` and `type` per session so
+  the settings page can offer the real strings to click rather than making
+  someone guess Plex's spelling of a username.
 - This device sits in the PMS "allowed without auth" list, so `plex.token` is
   empty here; other people's servers get 401 and go through the plex.tv link
   flow (`plex/auth.py`, PIN + polling; the code shows on panel and portal).
@@ -205,6 +221,17 @@ successful apply (`POST /api/network/clear-error`).
 ### Rendering constraints
 
 - Left 64x64 is poster art; right 64x64 is text. `RX = 64`.
+- The progress bar and time remaining come from `Session.live_offset_ms`,
+  which advances the last polled `viewOffset` by the wall time since it was
+  sampled. Without it both step visibly once per `poll_seconds`. Paused
+  sessions hold still, and the next poll resets the base so drift cannot
+  accumulate. `Session.progress` is still the raw poll value — the API
+  reports it; the panel does not use it.
+- An unreachable Plex server draws "Can't reach Plex" in the idle branch
+  rather than as a `DisplayMode` status page, deliberately: status pages are
+  drawn ahead of the schedule gate, and a notice that lights the panel at 3am
+  is worse than the wrong caption. `Nothing playing` and `plex_offline` are
+  different claims and must not be conflated.
 - Vertical positions are **computed**, not hardcoded — `compute_text_layout`
   distributes blocks using each font's real `.height`/`.baseline`. Don't
   reintroduce magic baseline constants.
@@ -223,8 +250,11 @@ nmcli calls). Add tests there for any new pure logic.
 (`npm install jsdom && node tests/web_ui_test.js`), building the page from the
 real templates and driving the real `picker.js`/`app.js` with `fetch` and
 `confirm` stubbed. It covers the UI's logic rather than its looks: Save is
-scoped to the visible section, the unsaved-changes guard on navigation, and
-static-IP validation. `node_modules` is gitignored — install jsdom wherever
+scoped to the visible section, the unsaved-changes guard on navigation,
+static-IP validation, and the filter rules (checkbox groups, click-to-add
+names, revert). Note that several checkboxes cannot share one `data-path` —
+Save would keep only the last — so a group writes through a single hidden
+input that owns the path (`data-group`, `syncGroups`/`bindGroups`). `node_modules` is gitignored — install jsdom wherever
 you run it.
 
 **Visual preview** — PIL can read the same BDF fonts via `PIL.BdfFontFile`, so

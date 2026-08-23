@@ -36,9 +36,37 @@ class Session:
     duration_ms: float = 0.0
     view_offset_ms: float = 0.0
     state: str = "playing"
+    # Who/what is playing it, kept for the session filter (see plex/filter.py).
+    player: str = ""
+    media_type: str = ""
+    # When view_offset_ms was sampled, on the monotonic clock. The panel
+    # advances the position from here between polls — see live_offset_ms.
+    sampled_at: float = field(default_factory=time.monotonic)
     poster: Optional[Image.Image] = field(default=None, repr=False)
     # Lazily built from `poster` the first time this session is seen paused.
     poster_paused: Optional[Image.Image] = field(default=None, repr=False)
+
+    def live_offset_ms(self, now: Optional[float] = None) -> float:
+        """Playback position now, not at the last poll.
+
+        Plex is polled every few seconds, so a raw viewOffset makes the
+        progress bar and the time remaining jump in visible steps. While a
+        session is playing the position is simply advanced by the wall time
+        since it was sampled; anything paused or buffering holds still. The
+        next poll resets it, so drift never accumulates.
+        """
+        if self.state != "playing":
+            return self.view_offset_ms
+        now = time.monotonic() if now is None else now
+        advanced = self.view_offset_ms + max(0.0, now - self.sampled_at) * 1000.0
+        if self.duration_ms > 0:
+            return min(advanced, self.duration_ms)
+        return advanced
+
+    def live_progress(self, now: Optional[float] = None) -> float:
+        if self.duration_ms <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.live_offset_ms(now) / self.duration_ms))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +82,10 @@ class State:
         self.current_key: Optional[str] = None
         self.last_cycle = time.monotonic()
         self.dim = False
+        # True once Plex has failed enough polls in a row to be considered
+        # gone. The idle clock alone would claim nothing is playing, which is
+        # a different — and wrong — thing to tell someone.
+        self.plex_offline = False
         self.mode = DisplayMode.NORMAL
         self.mode_payload: dict = {}
 

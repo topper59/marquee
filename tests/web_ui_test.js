@@ -16,7 +16,9 @@ const TPL = ROOT + "templates/";
 
 const CFG = {
   device: { name: "NowPlaying" }, web: { password: null, theme: "auto" },
-  plex: { url: "http://x", server_name: "S", verify_ssl: false, poll_seconds: 5 },
+  plex: { url: "http://x", server_name: "S", verify_ssl: false, poll_seconds: 5,
+          filter: { users: [], ignore_users: [], players: [], ignore_players: [],
+                    media_types: [], hide_paused: false } },
   display: { cycle_seconds: 10, brightness_normal: 60, brightness_dim: 20,
              schedule_start: "00:00", schedule_stop: "00:00" },
   ha: { enabled: false, require_sunset: true, url: "", token: "", tv_entity: "" },
@@ -24,7 +26,8 @@ const CFG = {
              ipv4_gateway: "", ipv4_dns: "" },
   log_level: "INFO",
 };
-const STATUS = { sessions: [], network: { status: "online", ip: "192.168.2.129",
+const STATUS = { sessions: [], plex_offline: false,
+                 network: { status: "online", ip: "192.168.2.129",
                  ssid: "Wifi", mac: "DC:A6:32:02:9C:47", ipv4_method: "auto",
                  ipv4_error: "" } };
 
@@ -69,7 +72,8 @@ w.fetch = async (url, opts) => {
 // One eval: separate ones do not share top-level const/function scope.
 w.eval(fs.readFileSync(SRC + "picker.js", "utf8") + "\n" +
        fs.readFileSync(SRC + "app.js", "utf8") + "\n" +
-       "window.__save = save;\nwindow.__renderCandidates = renderCandidates;");
+       "window.__save = save;\nwindow.__renderCandidates = renderCandidates;\n" +
+       "window.__loadStatus = loadStatus;");
 
 const $ = (s) => w.document.querySelector(s);
 const renderCandidatesForTest = () =>
@@ -264,6 +268,79 @@ const edit = (path, value) => {
         /nowplaying\.local/.test($("#restart-note").textContent));
 
   check("keep-wifi link does not navigate away", w.location.hash === "#device");
+
+
+  console.log("what to show");
+  go("#filters"); await settle();
+  check("filters section opens", !$("#sec-filters").hidden);
+  check("nothing filtered by default", $("#save").disabled);
+
+  // Media types are several checkboxes writing through one hidden field.
+  const movies = w.document.querySelector('[data-group="plex.filter.media_types"][value="movie"]');
+  movies.checked = true;
+  movies.dispatchEvent(new w.Event("change", { bubbles: true }));
+  await settle();
+  check("ticking a media type marks the section dirty", !$("#save").disabled);
+  check("the group writes through to the hidden field",
+        field("plex.filter.media_types").value === "movie");
+
+  posted = [];
+  await w.__save();
+  const fbody = posted.find((p) => p.url === "/api/settings").body;
+  check("media types posted as one path", fbody["plex.filter.media_types"] === "movie");
+  check("posted nothing else", Object.keys(fbody).length === 1);
+
+  console.log("filter rules revert with their section");
+  await settle();
+  edit("plex.filter.ignore_users", "Guest");
+  const music = w.document.querySelector('[data-group="plex.filter.media_types"][value="track"]');
+  music.checked = true;
+  music.dispatchEvent(new w.Event("change", { bubbles: true }));
+  await settle();
+  confirmAnswer = true; confirmed = [];
+  go("#"); await settle();
+  check("leaving a dirty filter section asks", confirmed.length === 1 &&
+        /What to show/.test(confirmed[0]));
+  check("the text rule is put back", field("plex.filter.ignore_users").value === "");
+  check("and the checkbox group is put back too", music.checked === false);
+
+  console.log("names from the running sessions can be clicked in");
+  STATUS.sessions = [{ title: "Ted Lasso", user: "James", state: "playing",
+                       player: "Living Room TV", type: "episode" }];
+  await w.__loadStatus(); await settle();
+  go("#filters"); await settle();
+  const chips = [...w.document.querySelectorAll("#filter-seen-list button")]
+    .map((b) => b.textContent);
+  check("both the person and the player are offered",
+        chips.includes("James") && chips.includes("Living Room TV"));
+  [...w.document.querySelectorAll("#filter-seen-list button")]
+    .find((b) => b.textContent === "James").click();
+  await settle();
+  check("clicking a person fills the people rule",
+        field("plex.filter.users").value === "James");
+  check("a player goes to the player rule instead",
+        field("plex.filter.players").value === "");
+  check("clicking a name enables save", !$("#save").disabled);
+  // Clicking the same name twice must not duplicate it.
+  [...w.document.querySelectorAll("#filter-seen-list button")]
+    .find((b) => b.textContent === "James").click();
+  await settle();
+  check("the same name is not added twice",
+        field("plex.filter.users").value === "James");
+
+  confirmAnswer = true; confirmed = [];
+  go("#"); await settle();
+
+  console.log("an unreachable server is called out");
+  STATUS.sessions = [];
+  STATUS.plex_offline = true;
+  await w.__loadStatus(); await settle();
+  check("the now-playing card stays up", !$("#now-playing").hidden);
+  check("and says the server cannot be reached", !$("#np-offline").hidden);
+  STATUS.plex_offline = false;
+  await w.__loadStatus(); await settle();
+  check("the notice clears when it comes back", $("#np-offline").hidden);
+  check("and the empty card goes away", $("#now-playing").hidden);
 
   console.log(fails ? `\n${fails} FAILED` : "\nall passed");
   process.exit(fails ? 1 : 0);

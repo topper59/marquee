@@ -7,6 +7,8 @@
 <div id="home">
   <div id="now-playing" class="card" hidden>
     <h2>Now playing</h2>
+    <p id="np-offline" class="offline" hidden>Can’t reach Plex — the panel is
+      showing a warning instead of what’s playing.</p>
     <ul id="np-list"></ul>
   </div>
 
@@ -14,6 +16,8 @@
     <ul class="menu">
       <li><a class="navrow" href="#plex"><span class="icon">🎬</span>Plex server
         <span class="sub" id="menu-plex-sub"></span><span class="chev">›</span></a></li>
+      <li><a class="navrow" href="#filters"><span class="icon">🔎</span>What to show
+        <span class="sub" id="menu-filters-sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#display"><span class="icon">💡</span>Display
         <span class="sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#ha"><span class="icon">🏠</span>Home Assistant
@@ -69,6 +73,53 @@
           <input type="number" data-path="plex.poll_seconds" min="1" max="3600">
         </label>
       </details>
+    </div>
+  </section>
+
+  <section class="page" id="sec-filters" hidden>
+    <a class="backlink" href="#">‹ Settings</a>
+    <div class="card">
+      <h2>What to show</h2>
+      <p class="hint">Plex reports every stream on the server, including other
+        people's. Leave everything here empty to show them all.</p>
+
+      <label class="check">
+        <input type="checkbox" data-path="plex.filter.hide_paused"> Hide paused streams
+      </label>
+
+      <h3>Media</h3>
+      <input type="hidden" data-path="plex.filter.media_types">
+      <div class="checkgroup">
+        <label class="check"><input type="checkbox" data-group="plex.filter.media_types" value="movie"> Movies</label>
+        <label class="check"><input type="checkbox" data-group="plex.filter.media_types" value="episode"> TV episodes</label>
+        <label class="check"><input type="checkbox" data-group="plex.filter.media_types" value="track"> Music</label>
+        <label class="check"><input type="checkbox" data-group="plex.filter.media_types" value="other"> Everything else</label>
+      </div>
+      <p class="hint">Nothing ticked means every kind of media is shown.</p>
+
+      <h3>People</h3>
+      <label>Only show these people
+        <input type="text" data-path="plex.filter.users" placeholder="e.g. James, Ana">
+      </label>
+      <label>Never show these people
+        <input type="text" data-path="plex.filter.ignore_users" placeholder="e.g. guest">
+      </label>
+
+      <h3>Devices</h3>
+      <label>Only show these players
+        <input type="text" data-path="plex.filter.players" placeholder="e.g. Living Room TV">
+      </label>
+      <label>Never show these players
+        <input type="text" data-path="plex.filter.ignore_players" placeholder="e.g. Kitchen iPad">
+      </label>
+      <p class="hint">Separate names with commas. Capitals do not matter, but
+        the spelling does — “never show” wins over “only show”.</p>
+
+      <div id="filter-seen" hidden>
+        <h3>Playing right now</h3>
+        <p class="hint">Tap a name to add it to “only show”.</p>
+        <ul id="filter-seen-list" class="seenlist"></ul>
+      </div>
     </div>
   </section>
 

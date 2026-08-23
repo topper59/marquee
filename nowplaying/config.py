@@ -20,6 +20,8 @@ import tempfile
 import threading
 from datetime import time as dtime
 
+from nowplaying.plex import filters
+
 log = logging.getLogger("plex-matrix")
 
 CONFIG_PATH = os.environ.get("NOWPLAYING_CONFIG", "/var/lib/nowplaying/config.json")
@@ -76,6 +78,16 @@ def defaults() -> dict:
             "poll_seconds": 5,
             "stale_after_failures": 6,
             "http_timeout": 4,
+            # Which sessions reach the panel. All empty = show everything,
+            # which is what an out-of-box device must do. See plex/filters.py.
+            "filter": {
+                "users": [],            # allow-list; empty means everyone
+                "ignore_users": [],     # deny-list, beats the allow-list
+                "players": [],          # allow-list; empty means anything
+                "ignore_players": [],
+                "media_types": [],      # subset of movie/episode/track/other
+                "hide_paused": False,
+            },
         },
         "display": {
             "cycle_seconds": 10,
@@ -208,6 +220,22 @@ def _ipv4_method(v):
     return s
 
 
+def _str_list(v):
+    """A rule list. Accepts a JSON list or the settings page's comma-separated
+    string, and always stores a list so config.json stays self-describing."""
+    return filters.as_list(v)
+
+
+def _media_types(v):
+    out = filters.as_list(v)
+    for t in out:
+        if t.casefold() not in filters.MEDIA_TYPES:
+            raise ValueError(
+                f"unknown media type: {t!r} (expected one of "
+                f"{', '.join(filters.MEDIA_TYPES)})")
+    return [t.casefold() for t in out]
+
+
 def _theme(v):
     s = str(v).strip().lower()
     if s not in ("auto", "light", "dark"):
@@ -235,6 +263,12 @@ _VALIDATORS = {
     "plex.poll_seconds":          _int_range(1, 3600),
     "plex.stale_after_failures":  _int_range(1, 100),
     "plex.http_timeout":          _int_range(1, 60),
+    "plex.filter.users":          _str_list,
+    "plex.filter.ignore_users":   _str_list,
+    "plex.filter.players":        _str_list,
+    "plex.filter.ignore_players": _str_list,
+    "plex.filter.media_types":    _media_types,
+    "plex.filter.hide_paused":    _as_bool,
     "display.cycle_seconds":      _int_range(2, 3600),
     "display.brightness_normal":  _int_range(1, 100),
     "display.brightness_dim":     _int_range(1, 100),

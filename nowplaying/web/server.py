@@ -160,9 +160,14 @@ def create_app(config, state, netmgr=None) -> Flask:
     def status():
         cfg = config.get()
         with state.lock:
-            sessions = [{"title": s.title, "user": s.user, "state": s.state}
+            # `player` and `type` are here so the Filters page can show what
+            # the rules would actually be matching against — copying a name
+            # off this list beats guessing at Plex's spelling of it.
+            sessions = [{"title": s.title, "user": s.user, "state": s.state,
+                         "player": s.player, "type": s.media_type}
                         for s in state.sessions]
             dim = state.dim
+            plex_offline = state.plex_offline
         ip = ssid = ""
         if not in_ap_mode():
             # local_ip() covers unmanaged devices (network.manage=false),
@@ -176,6 +181,7 @@ def create_app(config, state, netmgr=None) -> Flask:
             "plex_url": cfg["plex"]["url"],
             "sessions": sessions,
             "dim": dim,
+            "plex_offline": plex_offline,
             "network": {
                 "status": netmgr.status if netmgr else "passive",
                 "error": netmgr.last_error if netmgr else "",

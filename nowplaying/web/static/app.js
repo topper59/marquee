@@ -9,10 +9,10 @@ const RESTART_NOTE = $("#restart-note").textContent;
    across sections meant a change you could no longer see — a static IP, say —
    riding along with an unrelated one, and any error landing on a page you had
    already left. */
-const SECTIONS = ["plex", "display", "ha", "network", "device"];
+const SECTIONS = ["plex", "filters", "display", "ha", "network", "device"];
 const SECTION_NAMES = {
-  plex: "Plex server", display: "Display", ha: "Home Assistant",
-  network: "Network", device: "Device",
+  plex: "Plex server", filters: "What to show", display: "Display",
+  ha: "Home Assistant", network: "Network", device: "Device",
 };
 
 let currentSection = "";
@@ -39,6 +39,7 @@ function revertSection(section) {
     else el.value = el.dataset.initial;
   });
   syncSliders();
+  syncGroups();
   applyTheme();
   if (section === "network") {
     showStaticFields();
@@ -111,7 +112,18 @@ async function loadSettings() {
   applyTheme();
   updateSaveState();
   $("#menu-ha-sub").textContent = cfg.ha.enabled ? "On" : "Off";
+  $("#menu-filters-sub").textContent = filtersSummary(cfg.plex.filter);
   $("#menu-device-sub").textContent = cfg.device.name || "";
+}
+
+/* "Everything" unless a rule is actually doing something, so the menu row
+   answers the question people come to this page with — is the panel hiding
+   anything from me? */
+function filtersSummary(f) {
+  if (!f) return "";
+  const lists = ["users", "ignore_users", "players", "ignore_players", "media_types"];
+  const active = lists.filter((k) => (f[k] || []).length).length + (f.hide_paused ? 1 : 0);
+  return active ? `${active} rule${active > 1 ? "s" : ""}` : "Everything";
 }
 
 /* Theme is previewed the moment it is picked — waiting for Save to find out
@@ -178,20 +190,26 @@ async function loadStatus() {
     const card = $("#now-playing");
     const list = $("#np-list");
     list.innerHTML = "";
+    $("#np-offline").hidden = !st.plex_offline;
     if (st.sessions && st.sessions.length) {
       st.sessions.forEach((s) => {
         const li = document.createElement("li");
         li.textContent = `${s.title} `;
         const who = document.createElement("span");
         who.className = "who";
-        who.textContent = `— ${s.user}${s.state === "paused" ? " (paused)" : ""}`;
+        const on = s.player ? ` on ${s.player}` : "";
+        who.textContent = `— ${s.user}${on}${s.state === "paused" ? " (paused)" : ""}`;
         li.appendChild(who);
         list.appendChild(li);
       });
       card.hidden = false;
     } else {
-      card.hidden = true;
+      // The card still has something to say when Plex is unreachable: an
+      // empty page would read as "nothing is on", which is the confusion
+      // this is here to prevent.
+      card.hidden = !st.plex_offline;
     }
+    renderSeen(st.sessions || []);
     const net = st.network || {};
     $("#net-status").textContent = netLabel(net);
     $("#net-ssid").textContent = net.ssid || "—";
@@ -207,6 +225,37 @@ async function loadStatus() {
     // cannot be wiped by a background refresh.
     if (net.ipv4_error) ipv4Error(net.ipv4_error);
   } catch { /* status is decorative; ignore */ }
+}
+
+/* Plex's spelling of a username or a player name is not always what someone
+   would type from memory, and a filter that silently matches nothing is the
+   worst outcome here — so offer the real strings to click. */
+function renderSeen(sessions) {
+  const box = $("#filter-seen");
+  const list = $("#filter-seen-list");
+  const names = [...new Set(
+    sessions.flatMap((s) => [s.user, s.player]).filter(Boolean))];
+  list.innerHTML = "";
+  names.forEach((name) => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = name;
+    b.addEventListener("click", () => {
+      // A player name goes to the player rule, a person to the people rule.
+      const isPlayer = sessions.some((s) => s.player === name);
+      const el = field(isPlayer ? "plex.filter.players" : "plex.filter.users");
+      const have = el.value.split(",").map((t) => t.trim()).filter(Boolean);
+      if (!have.some((t) => t.toLowerCase() === name.toLowerCase())) {
+        have.push(name);
+        el.value = have.join(", ");
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    li.appendChild(b);
+    list.appendChild(li);
+  });
+  box.hidden = !names.length;
 }
 
 async function showCurrentServer() {
@@ -342,6 +391,8 @@ async function showPasswordState() {
 }
 
 window.onServerSaved = showCurrentServer;
+
+bindGroups();
 
 field("web.theme").addEventListener("change", applyTheme);
 

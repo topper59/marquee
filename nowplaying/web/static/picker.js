@@ -44,16 +44,51 @@ function bindSliders() {
   });
 }
 
+/* ── Checkbox groups ──────────────────────────────────────────────────────
+   Some settings are a list chosen from a fixed set (which media types to
+   show). Several checkboxes cannot each carry the same data-path — save()
+   would take whichever it saw last — so the group writes through a single
+   hidden input that owns the path. Everything downstream (dirty tracking,
+   revert, save) then treats it as one ordinary field. */
+function groupMembers(path) {
+  return document.querySelectorAll(`[data-group="${path}"]`);
+}
+
+function syncGroups() {
+  document.querySelectorAll("input[type=hidden][data-path]").forEach((h) => {
+    const chosen = new Set(
+      h.value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
+    groupMembers(h.dataset.path).forEach((cb) => {
+      cb.checked = chosen.has(cb.value.toLowerCase());
+    });
+  });
+}
+
+function bindGroups() {
+  document.querySelectorAll("input[type=hidden][data-path]").forEach((h) => {
+    const members = [...groupMembers(h.dataset.path)];
+    members.forEach((cb) => cb.addEventListener("change", () => {
+      h.value = members.filter((m) => m.checked).map((m) => m.value).join(", ");
+      // The hidden input is what the page watches for unsaved changes, and a
+      // programmatic value assignment fires nothing on its own.
+      h.dispatchEvent(new Event("change", { bubbles: true }));
+    }));
+  });
+}
+
 /* Fill every [data-path] control from a settings snapshot and remember the
    loaded value, so save() can send only what actually changed. */
 function applyConfigToFields(cfg) {
   fields().forEach((el) => {
     const v = getPath(cfg, el.dataset.path);
     if (el.type === "checkbox") el.checked = !!v;
+    // List settings arrive as arrays; show them the way they are typed back.
+    else if (Array.isArray(v)) el.value = v.join(", ");
     else el.value = v == null ? "" : v;
     el.dataset.initial = String(fieldValue(el));
   });
   syncSliders();
+  syncGroups();
 }
 
 function toast(msg, isError = false) {

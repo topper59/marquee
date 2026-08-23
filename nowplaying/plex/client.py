@@ -10,6 +10,7 @@ import urllib3
 from PIL import Image
 
 from nowplaying import config
+from nowplaying.plex.filters import apply_filter
 from nowplaying.display.state import Session, State
 
 log = logging.getLogger("plex-matrix")
@@ -57,6 +58,7 @@ class Plex:
             view_offset = float(m.get("viewOffset", 0) or 0)
             progress    = (view_offset / duration) if duration > 0 else 0.0
 
+            player = m.get("Player") or {}
             sessions.append(Session(
                 session_key=str(m.get("sessionKey", "")),
                 title=str(title),
@@ -66,7 +68,9 @@ class Plex:
                 thumb_path=str(thumb),
                 duration_ms=duration,
                 view_offset_ms=view_offset,
-                state=str((m.get("Player") or {}).get("state", "playing")),
+                state=str(player.get("state", "playing")),
+                player=str(player.get("title", "") or player.get("product", "")),
+                media_type=media_type,
             ))
         return sessions
 
@@ -117,8 +121,11 @@ def fetcher_loop(config, state: State, stop: threading.Event):
     while not stop.is_set():
         pc = config.get()["plex"]
         if not pc["url"]:
-            # Unprovisioned: nothing to poll yet.
+            # Unprovisioned: nothing to poll yet, and nothing to be offline
+            # from — the panel shows the setup prompt in this state.
             state.replace([])
+            with state.lock:
+                state.plex_offline = False
             stop.wait(pc["poll_seconds"])
             continue
         sig = (pc["url"], pc["token"], pc["verify_ssl"], pc["http_timeout"])
@@ -126,11 +133,16 @@ def fetcher_loop(config, state: State, stop: threading.Event):
             plex = Plex(pc["url"], pc["token"], pc["verify_ssl"], pc["http_timeout"])
             plex_sig = sig
             failures = 0
+            # A different server gets a clean slate: the old one's failures
+            # say nothing about this one.
+            with state.lock:
+                state.plex_offline = False
         try:
-            sessions = plex.get_activity()
+            sessions = apply_filter(plex.get_activity(), pc.get("filter") or {})
             state.replace(sessions)
             failures = 0
             with state.lock:
+                state.plex_offline = False
                 to_fetch = [(s.session_key, s.thumb_path) for s in state.sessions if s.poster is None]
             for key, thumb in to_fetch:
                 if stop.is_set():
@@ -145,7 +157,9 @@ def fetcher_loop(config, state: State, stop: threading.Event):
             failures += 1
             log.warning("Fetch cycle failed (%d in a row): %s", failures, e)
             if failures == pc["stale_after_failures"]:
-                log.warning("Plex unreachable for ~%ds — clearing the display",
+                log.warning("Plex unreachable for ~%ds — saying so on the panel",
                             failures * pc["poll_seconds"])
                 state.replace([])
+                with state.lock:
+                    state.plex_offline = True
         stop.wait(pc["poll_seconds"])
