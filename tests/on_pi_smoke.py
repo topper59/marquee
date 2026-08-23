@@ -25,7 +25,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import threading  # noqa: E402
 
 import nowplaying.config as cfgmod  # noqa: E402
-from nowplaying.config import Config, parse_hhmm  # noqa: E402
+from nowplaying.config import (  # noqa: E402
+    Config, parse_hhmm, hex_to_rgb, scale_rgb,
+)
+from nowplaying.display.render import (  # noqa: E402
+    is_within_schedule, is_within_dim_window,
+)
 from nowplaying.display.matrix import (  # noqa: E402
     wrap_two_lines, format_remaining, compute_text_layout,
 )
@@ -865,6 +870,102 @@ with tempfile.TemporaryDirectory() as d:
               ostate.plex_offline is False)
     finally:
         plexclient.Plex = real_plex
+
+print("accent colour")
+check("hex parses", hex_to_rgb("#e5a00d") == (229, 160, 13))
+check("a bare hex parses", hex_to_rgb("e5a00d") == (229, 160, 13))
+check("shorthand expands", hex_to_rgb("#abc") == (170, 187, 204))
+for bad_c in ("#12345", "nope", "", "#gggggg"):
+    try:
+        hex_to_rgb(bad_c)
+        ok = False
+    except ValueError:
+        ok = True
+    check(f"rejects {bad_c!r}", ok)
+check("scaling dims", scale_rgb((200, 100, 50), 0.5) == (100, 50, 25))
+check("scaling clamps at the top", scale_rgb((200, 100, 50), 5) == (255, 255, 250))
+check("scaling never goes negative", scale_rgb((200, 100, 50), -1) == (0, 0, 0))
+# The derived "time remaining" shade must stay close to the hand-picked value
+# it replaced, or every existing panel changes appearance on upgrade.
+was = (170, 120, 20)
+now_c = scale_rgb(hex_to_rgb("#e5a00d"), cfgmod.REMAIN_SCALE)
+check("the default still looks like the old amber",
+      all(abs(a - b) <= 12 for a, b in zip(was, now_c)))
+
+with tempfile.TemporaryDirectory() as d:
+    ac = Config(os.path.join(d, "config.json"))
+    check("accent defaults to plex amber",
+          ac.get()["display"]["accent"] == "#e5a00d")
+    ac.update({"display.accent": "3AA0FF"})
+    check("stored normalized with a hash and lower case",
+          ac.get()["display"]["accent"] == "#3aa0ff")
+    try:
+        ac.update({"display.accent": "burgundy"})
+        rejected = False
+    except ValueError:
+        rejected = True
+    check("a non-colour is rejected", rejected)
+    try:
+        ac.update({"display.idle_mode": "disco"})
+        rejected = False
+    except ValueError:
+        rejected = True
+    check("an unknown idle mode is rejected", rejected)
+    for mode in ("clock", "blank", "poster"):
+        ac.update({"display.idle_mode": mode})
+        check(f"idle mode {mode!r} accepted",
+              ac.get()["display"]["idle_mode"] == mode)
+
+print("schedule and dim windows")
+t = lambda h, m=0: __import__("datetime").time(h, m)
+# Equal endpoints mean opposite things, deliberately: an unset schedule must
+# leave the panel on, an unset dim window must leave brightness alone.
+check("equal endpoints = always on",
+      is_within_schedule(t(0), t(0), t(3)) is True)
+check("equal non-midnight endpoints are also always on",
+      is_within_schedule(t(7), t(7), t(3)) is True)
+check("equal endpoints = never dim",
+      is_within_dim_window(t(0), t(0), t(3)) is False)
+check("equal non-midnight endpoints never dim",
+      is_within_dim_window(t(7), t(7), t(9)) is False)
+check("daytime window includes its start", is_within_schedule(t(8), t(23), t(8)))
+check("daytime window excludes its stop", not is_within_schedule(t(8), t(23), t(23)))
+check("inside a daytime window", is_within_schedule(t(8), t(23), t(12)))
+check("before a daytime window", not is_within_schedule(t(8), t(23), t(7)))
+# The device in use runs 08:00 → 00:00, so end-of-day must keep working.
+check("end-of-day stop stays on late", is_within_schedule(t(8), t(0), t(23, 59)))
+check("end-of-day stop is off early", not is_within_schedule(t(8), t(0), t(3)))
+check("overnight dim window wraps midnight",
+      is_within_dim_window(t(22), t(7), t(2)))
+check("overnight dim window is off midday",
+      not is_within_dim_window(t(22), t(7), t(12)))
+check("overnight dim window includes its start",
+      is_within_dim_window(t(22), t(7), t(22)))
+check("overnight dim window excludes its stop",
+      not is_within_dim_window(t(22), t(7), t(7)))
+
+print("idle poster memory")
+istate = State()
+check("nothing held on a fresh device", istate.last_poster is None)
+held = sess("a")
+held.poster = "ARTWORK"          # stand-in; render only hands it to PIL
+istate.replace([held])
+check("nothing held while something is playing", istate.last_poster is None)
+istate.replace([])
+check("the last poster is kept when the list empties",
+      istate.last_poster == "ARTWORK")
+nxt = sess("b")
+nxt.poster = "SECOND"
+istate.replace([nxt])
+istate.replace([])
+check("and replaced by the next thing that plays",
+      istate.last_poster == "SECOND")
+# A session that never got its artwork must not wipe what is already held.
+bare = sess("c")
+istate.replace([bare])
+istate.replace([])
+check("a posterless session does not clear the held art",
+      istate.last_poster == "SECOND")
 
 print("parse_hhmm")
 check("parses", parse_hhmm("07:30").hour == 7)

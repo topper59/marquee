@@ -86,6 +86,9 @@ class State:
         # gone. The idle clock alone would claim nothing is playing, which is
         # a different — and wrong — thing to tell someone.
         self.plex_offline = False
+        # Artwork from the last thing that played, kept so the "poster" idle
+        # mode has something to show. One image, replaced not accumulated.
+        self.last_poster: Optional[Image.Image] = None
         self.mode = DisplayMode.NORMAL
         self.mode_payload: dict = {}
 
@@ -124,6 +127,12 @@ class State:
                 if old is not None and old.thumb_path == ns.thumb_path:
                     ns.poster        = old.poster
                     ns.poster_paused = old.poster_paused
+            # Going empty is the moment to remember what was on — after this
+            # the session it came from is gone.
+            if not new_sessions and self.sessions:
+                prev = self.sessions[self._index_of(self.current_key) or 0]
+                if prev.poster is not None:
+                    self.last_poster = prev.poster
             self.sessions = new_sessions
             if self._index_of(self.current_key) is None:
                 self.current_key = new_sessions[0].session_key if new_sessions else None

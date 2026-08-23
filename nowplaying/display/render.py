@@ -18,6 +18,8 @@ from nowplaying.display.matrix import (
 
 log = logging.getLogger("plex-matrix")
 
+# Left 64x64 is poster art, right 64x64 is text.
+RX = 64
 AMBER = (229, 160, 13)
 GRAY  = (150, 150, 150)
 RED   = (200, 60, 50)
@@ -28,13 +30,18 @@ def _centered(canvas, font, y, color, text):
     graphics.DrawText(canvas, font, x, y, graphics.Color(*color), text)
 
 
-def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict):
+def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict,
+                     accent: tuple = AMBER):
     """Full-screen status pages for setup/auth/reset. Called at ~2fps — a
-    handful of DrawText calls, no caching needed."""
+    handful of DrawText calls, no caching needed.
+
+    `accent` is the configured panel colour, so the setup and link screens
+    match the display they are about to become. Errors stay red regardless.
+    """
     _font_big, _font_sm, _font_sub, _font_clk = fonts
 
     if mode is DisplayMode.SETUP:
-        _centered(canvas, _font_big, 12, AMBER, "Setup")
+        _centered(canvas, _font_big, 12, accent, "Setup")
         _centered(canvas, _font_sm, 26, GRAY, "Join WiFi network:")
         _centered(canvas, _font_sm, 38, (235, 235, 235), payload.get("ssid", ""))
         _centered(canvas, _font_sm, 52, GRAY, "then visit " + payload.get("url", "10.42.0.1"))
@@ -43,14 +50,14 @@ def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict):
         # Online, but no Plex server chosen yet — point at the web UI. Both
         # the mDNS name and the raw IP are shown because .local resolution
         # fails on some networks and phones.
-        _centered(canvas, _font_big, 14, AMBER, "Setup")
+        _centered(canvas, _font_big, 14, accent, "Setup")
         _centered(canvas, _font_sm, 30, GRAY, "Open in a browser:")
         _centered(canvas, _font_sm, 42, (235, 235, 235), payload.get("host", ""))
         _centered(canvas, _font_sm, 54, GRAY, payload.get("ip", ""))
 
     elif mode is DisplayMode.CONNECTING:
         dots = "." * (1 + int(time.monotonic() * 2) % 3)
-        _centered(canvas, _font_big, 12, AMBER, "WiFi")
+        _centered(canvas, _font_big, 12, accent, "WiFi")
         _centered(canvas, _font_sm, 32, GRAY, "Connecting to")
         _centered(canvas, _font_sm, 44, (235, 235, 235), payload.get("ssid", "") + dots)
 
@@ -59,7 +66,7 @@ def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict):
         # The code is the payload star — big font, letter-spaced by hand.
         code = payload.get("code", "")
         spaced = " ".join(code)
-        _centered(canvas, _font_big, 34, AMBER, spaced)
+        _centered(canvas, _font_big, 34, accent, spaced)
         _centered(canvas, _font_sm, 52, (235, 235, 235), "enter at plex.tv/link")
 
     elif mode is DisplayMode.ERROR:
@@ -83,23 +90,38 @@ def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict):
         _centered(canvas, _font_sm, 47, GRAY, "to cancel")
 
 
-def is_within_schedule(start: dtime, stop: dtime) -> bool:
-    """Return True if the current local time falls within the active window.
+def _in_window(start: dtime, stop: dtime, now: dtime = None) -> bool:
+    """Is `now` inside [start, stop)? Wraps around midnight when stop < start.
 
-    start == stop == midnight means scheduling is disabled (always on).
+    Callers decide what equal endpoints mean — the two windows on this panel
+    disagree, so that decision cannot live in here.
     """
-    if start == stop == dtime(0, 0):
-        return True
-    now = datetime.now().time().replace(second=0, microsecond=0)
+    if now is None:
+        now = datetime.now().time()
+    now = now.replace(second=0, microsecond=0)
     if start <= stop:
-        # Normal window: e.g. 07:00 – 23:00 (stop=00:00 treated as end-of-day)
-        # Special case: stop at midnight means active until end of day
-        if stop == dtime(0, 0):
-            return now >= start
         return start <= now < stop
-    else:
-        # Overnight window: e.g. 22:00 – 06:00
-        return now >= start or now < stop
+    # Overnight window: e.g. 22:00 – 06:00, and 08:00 – 00:00 (end of day).
+    return now >= start or now < stop
+
+
+def is_within_schedule(start: dtime, stop: dtime, now: dtime = None) -> bool:
+    """Is the display meant to be on? Equal endpoints mean always."""
+    if start == stop:
+        return True
+    return _in_window(start, stop, now)
+
+
+def is_within_dim_window(start: dtime, stop: dtime, now: dtime = None) -> bool:
+    """Is the clock asking for the dim brightness? Equal endpoints mean never.
+
+    The opposite default to is_within_schedule, and deliberately so: an
+    unset schedule must leave the panel on, while an unset dim window must
+    leave the brightness alone.
+    """
+    if start == stop:
+        return False
+    return _in_window(start, stop, now)
 
 
 def make_paused_poster(img: Image.Image) -> Image.Image:
@@ -149,6 +171,12 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
     cfg_gen = None
     cycle_seconds = brightness_normal = brightness_dim = None
     sched_start = sched_stop = dtime(0, 0)
+    dim_start = dim_stop = dtime(0, 0)
+    accent_rgb = AMBER
+    remain_c = graphics.Color(*config.scale_rgb(accent_rgb, config.REMAIN_SCALE))
+    idle_mode = "clock"
+    clock_fmt = "%I:%M %p"
+    idle_src = idle_dimmed = None
     needs_setup = False
     setup_addr = {"host": "", "ip": ""}
     addr_checked = 0.0
@@ -163,6 +191,15 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             brightness_dim    = disp["brightness_dim"]
             sched_start = parse_hhmm(disp["schedule_start"])
             sched_stop  = parse_hhmm(disp["schedule_stop"])
+            dim_start   = parse_hhmm(disp["dim_start"])
+            dim_stop    = parse_hhmm(disp["dim_stop"])
+            idle_mode   = disp["idle_mode"]
+            clock_fmt   = "%H:%M" if disp["clock_24h"] else "%I:%M %p"
+            # Built here rather than per frame: graphics.Color allocates, and
+            # this loop runs 20 times a second.
+            accent_rgb  = config.hex_to_rgb(disp["accent"])
+            remain_c    = graphics.Color(
+                *config.scale_rgb(accent_rgb, config.REMAIN_SCALE))
             # Derived from the Plex URL rather than the `provisioned` flag, so
             # the panel starts working the moment a server is picked — and
             # says so again if that server is ever cleared.
@@ -198,7 +235,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                     last_brightness = target
             canvas.Clear()
             draw_mode_screen(canvas, (_font_big, _font_sm, _font_sub, _font_clk),
-                             mode, payload)
+                             mode, payload, accent_rgb)
             canvas = matrix.SwapOnVSync(canvas)
             was_active = True
             stop.wait(0.5)
@@ -225,7 +262,10 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
         # ── Brightness ─────────────────────────────────────────────────────
         state.maybe_cycle(cycle_seconds)
         with state.lock:
-            should_dim = state.dim
+            ha_dim = state.dim
+        # Either source is enough. Home Assistant knows the TV is on; the dim
+        # window is for the far more common case of no Home Assistant at all.
+        should_dim = ha_dim or is_within_dim_window(dim_start, dim_stop)
         target_brightness = brightness_dim if should_dim else brightness_normal
         if target_brightness != last_brightness:
             matrix.brightness = target_brightness
@@ -237,9 +277,6 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
         current = state.current()
 
         if current is None:
-            t  = time.strftime("%I:%M %p")
-            x  = (128 - text_width(_font_clk, t)) // 2
-            graphics.DrawText(canvas, _font_clk, x, 13, clk_c, t)
             # An unreachable server and an idle one look identical from here,
             # but they are not: saying "Nothing playing" while Plex is down
             # is a lie that sends people looking at the wrong thing. This is
@@ -248,7 +285,15 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             # lights the panel at 3am would be worse than the lie.
             with state.lock:
                 offline = state.plex_offline
+                held = state.last_poster
+
+            # An outage outranks the idle style, including "blank": the panel
+            # going dark is exactly what someone would misread as "it broke",
+            # and this is the screen that tells them which thing broke.
             if offline:
+                t  = time.strftime(clock_fmt)
+                x  = (128 - text_width(_font_clk, t)) // 2
+                graphics.DrawText(canvas, _font_clk, x, 13, clk_c, t)
                 msg = "Can't reach Plex"
                 x2  = (128 - text_width(_font_sm, msg)) // 2
                 graphics.DrawText(canvas, _font_sm, x2, 44,
@@ -257,13 +302,34 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                 x3   = (128 - text_width(_font_sm, hint)) // 2
                 graphics.DrawText(canvas, _font_sm, x3, 55,
                                   graphics.Color(70, 70, 70), hint)
+
+            elif idle_mode == "blank":
+                pass  # canvas is already cleared; swap it out dark
+
+            elif idle_mode == "poster" and held is not None:
+                # Dimmed once per poster, not per frame. `is` rather than ==:
+                # comparing two PIL images compares pixels, which is exactly
+                # the per-frame cost this cache exists to avoid.
+                if idle_src is not held:
+                    idle_src = held
+                    idle_dimmed = held.point(
+                        lambda v: int(v * config.IDLE_POSTER_DIM))
+                canvas.SetImage(idle_dimmed, 0, 0)
+                t = time.strftime(clock_fmt)
+                x = RX + max(0, (64 - text_width(_font_clk, t)) // 2)
+                graphics.DrawText(canvas, _font_clk, x, 36, clk_c, t)
+
             else:
+                # "clock", and the fallback for "poster" before anything has
+                # played — a device that just booted has no artwork to hold.
+                t  = time.strftime(clock_fmt)
+                x  = (128 - text_width(_font_clk, t)) // 2
+                graphics.DrawText(canvas, _font_clk, x, 13, clk_c, t)
                 msg = "Nothing playing"
                 x2  = (128 - text_width(_font_sm, msg)) // 2
                 graphics.DrawText(canvas, _font_sm, x2, 46,
                                   graphics.Color(60, 60, 60), msg)
         else:
-            RX = 64
             sub_max_chars = 64 // 5
 
             title = current.title or "—"
@@ -328,7 +394,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             remaining = format_remaining(current.duration_ms, live_offset)
             if remaining:
                 graphics.DrawText(canvas, _font_sm, RX + 1, rem_y,
-                                  graphics.Color(*config.REMAIN_FG), remaining)
+                                  remain_c, remaining)
 
             bar_x0, bar_x1 = 65, 126
             bar_y0, bar_y1 = config.BAR_Y0, config.BAR_Y1
@@ -338,7 +404,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             fill = int((bar_x1 - bar_x0) * current.live_progress(now))
             for bx in range(bar_x0, bar_x0 + fill + 1):
                 for by in range(bar_y0, bar_y1 + 1):
-                    canvas.SetPixel(bx, by, *config.PROGRESS_FG)
+                    canvas.SetPixel(bx, by, *accent_rgb)
 
             idx, n = state.cycle_position()
             if n > 1:

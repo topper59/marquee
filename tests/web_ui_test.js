@@ -20,7 +20,9 @@ const CFG = {
           filter: { users: [], ignore_users: [], players: [], ignore_players: [],
                     media_types: [], hide_paused: false } },
   display: { cycle_seconds: 10, brightness_normal: 60, brightness_dim: 20,
-             schedule_start: "00:00", schedule_stop: "00:00" },
+             schedule_start: "00:00", schedule_stop: "00:00",
+             dim_start: "00:00", dim_stop: "00:00", accent: "#e5a00d",
+             idle_mode: "clock", clock_24h: false },
   ha: { enabled: false, require_sunset: true, url: "", token: "", tv_entity: "" },
   network: { ipv4_method: "auto", ipv4_address: "", ipv4_prefix: 24,
              ipv4_gateway: "", ipv4_dns: "" },
@@ -341,6 +343,40 @@ const edit = (path, value) => {
   await w.__loadStatus(); await settle();
   check("the notice clears when it comes back", $("#np-offline").hidden);
   check("and the empty card goes away", $("#now-playing").hidden);
+
+
+  console.log("display personalisation");
+  go("#display"); await settle();
+  check("the accent loads as a colour", field("display.accent").value === "#e5a00d");
+  check("idle mode loads", field("display.idle_mode").value === "clock");
+  check("dimmed brightness moved to Display",
+        field("display.brightness_dim").closest("section.page").id === "sec-display");
+  check("and is no longer duplicated in Home Assistant",
+        w.document.querySelectorAll('[data-path="display.brightness_dim"]').length === 1);
+
+  edit("display.accent", "#3aa0ff");
+  edit("display.idle_mode", "poster");
+  edit("display.clock_24h", true);
+  edit("display.dim_start", "22:00");
+  edit("display.dim_stop", "07:00");
+  posted = [];
+  await w.__save();
+  const dbody = posted.find((p) => p.url === "/api/settings").body;
+  check("accent posted", dbody["display.accent"] === "#3aa0ff");
+  check("idle mode posted", dbody["display.idle_mode"] === "poster");
+  check("24-hour clock posted", dbody["display.clock_24h"] === true);
+  check("dim window posted",
+        dbody["display.dim_start"] === "22:00" && dbody["display.dim_stop"] === "07:00");
+  check("untouched display fields stayed out",
+        dbody["display.cycle_seconds"] === undefined);
+
+  console.log("display edits revert with the section");
+  await settle();
+  edit("display.accent", "#ff0000");
+  confirmAnswer = true; confirmed = [];
+  go("#"); await settle();
+  check("leaving asks", confirmed.length === 1 && /Display/.test(confirmed[0]));
+  check("the accent is put back", field("display.accent").value === "#e5a00d");
 
   console.log(fails ? `\n${fails} FAILED` : "\nall passed");
   process.exit(fails ? 1 : 0);

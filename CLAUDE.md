@@ -128,7 +128,8 @@ then starts threads over one lock-guarded `State`:
 - **`ha.py: ha_poller_loop`** — optional Home Assistant integration; sets the
   single `dim` flag. The TV being on is always required; `ha.require_sunset`
   (default true) adds the `sun.sun below_horizon` condition. Idles when
-  disabled.
+  disabled. It is no longer the only way to dim: `display.dim_start`/
+  `dim_stop` do it on the clock, and the render loop ORs the two.
 - **`netmgr.py: NetManager`** — WiFi provisioning state machine over nmcli
   (AP mode + captive portal when unprovisioned). Provisioning is inert while
   config `network.manage` is false, but static addressing still applies (see
@@ -218,9 +219,35 @@ disconnected at the moment it happened; it therefore outlives the attempt and
 is cleared only explicitly — the Dismiss link, a new addressing save, or a
 successful apply (`POST /api/network/clear-error`).
 
+### Two time windows, opposite defaults
+
+`_in_window` does the wrap-around-midnight arithmetic; what *equal endpoints*
+mean is the caller's decision, and the two callers disagree on purpose:
+`is_within_schedule` (display on/off) reads them as **always**, while
+`is_within_dim_window` reads them as **never**. An unset schedule has to leave
+the panel on; an unset dim window has to leave the brightness alone. Note the
+old behaviour only treated `00:00`/`00:00` as always-on, so `07:00`/`07:00`
+silently meant "never on" — equal endpoints are now always-on whatever the
+time.
+
 ### Rendering constraints
 
-- Left 64x64 is poster art; right 64x64 is text. `RX = 64`.
+- Left 64x64 is poster art; right 64x64 is text. `RX = 64` (module level —
+  the idle branch needs it too).
+- `display.accent` is the one colour to change: the progress bar takes it
+  neat, the time remaining at `REMAIN_SCALE`, and the setup/link screens use
+  it for their headings. Errors stay red. Both are rebuilt only when
+  `Config.generation` moves, because `graphics.Color` allocates and this loop
+  runs 20×/second. The web UI keeps its own amber — a user-picked accent
+  behind `--on-accent` button text is a contrast problem, not a feature.
+- `display.idle_mode` is `clock` / `blank` / `poster`. `poster` holds
+  `State.last_poster` — stashed by `State.replace` at the moment the session
+  list goes empty, which is the last instant the artwork still exists — dims
+  it once per poster (cached on identity, not equality: comparing two PIL
+  images compares pixels), and puts the clock in the right half. It falls
+  back to the clock before anything has played.
+- An outage outranks all three idle modes, `blank` included: a dark panel is
+  exactly what someone would misread as "it broke".
 - The progress bar and time remaining come from `Session.live_offset_ms`,
   which advances the last polled `viewOffset` by the wall time since it was
   sampled. Without it both step visibly once per `poll_seconds`. Paused

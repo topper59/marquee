@@ -37,9 +37,14 @@ SCROLL_PX_PER_FRAME = 1
 SCROLL_FRAME_MS     = 50
 SCROLL_PAUSE_MS     = 1500
 IDLE_DIM            = (40, 40, 80)
-PROGRESS_FG         = (229, 160, 13)
 PROGRESS_BG         = (30, 30, 30)
-REMAIN_FG           = (170, 120, 20)
+# The progress bar and the time remaining are shades of `display.accent`, so
+# there is one colour to change rather than three to keep in step. The time
+# remaining sits a little behind the bar.
+REMAIN_SCALE        = 0.75
+# How far the held artwork is knocked back in the "poster" idle mode. It can
+# sit there for hours, so it is deliberately well under full brightness.
+IDLE_POSTER_DIM     = 0.45
 # Paused overlay: poster is dimmed to this fraction and stamped with two bars.
 PAUSE_DIM           = 0.35
 PAUSE_FG            = (235, 235, 235)
@@ -95,6 +100,18 @@ def defaults() -> dict:
             "brightness_dim": 20,
             "schedule_start": "00:00",
             "schedule_stop": "00:00",
+            # Dim by the clock, with no Home Assistant involved. Equal
+            # endpoints mean "never" — the HA flag is then the only source of
+            # dimming, which is how every device behaved before this existed.
+            "dim_start": "00:00",
+            "dim_stop": "00:00",
+            # Panel accent: progress bar, time remaining, and the headings on
+            # the setup/link screens. The web UI keeps its own amber.
+            "accent": "#e5a00d",
+            # What the panel does with itself when nothing is playing:
+            # "clock", "blank" (dark), or "poster" (hold the last artwork).
+            "idle_mode": "clock",
+            "clock_24h": False,
         },
         "ha": {
             "enabled": False,
@@ -145,6 +162,25 @@ def defaults() -> dict:
         },
         "log_level": "INFO",
     }
+
+
+def hex_to_rgb(value: str) -> tuple:
+    """'#e5a00d' → (229, 160, 13). Accepts 3- or 6-digit hex, with or
+    without the leading '#', because people paste these from anywhere."""
+    s = str(value).strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) != 6:
+        raise ValueError(f"not a colour: {value!r}")
+    try:
+        return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        raise ValueError(f"not a colour: {value!r}") from None
+
+
+def scale_rgb(rgb: tuple, factor: float) -> tuple:
+    """A dimmer shade of the same colour, clamped to the byte range."""
+    return tuple(max(0, min(255, int(c * factor))) for c in rgb)
 
 
 def parse_hhmm(s: str) -> dtime:
@@ -236,6 +272,18 @@ def _media_types(v):
     return [t.casefold() for t in out]
 
 
+def _hex_color(v):
+    """Stored normalized, so the settings page's colour input round-trips."""
+    return "#%02x%02x%02x" % hex_to_rgb(v)
+
+
+def _idle_mode(v):
+    s = str(v).strip().lower()
+    if s not in ("clock", "blank", "poster"):
+        raise ValueError(f"unknown idle mode: {v!r}")
+    return s
+
+
 def _theme(v):
     s = str(v).strip().lower()
     if s not in ("auto", "light", "dark"):
@@ -274,6 +322,11 @@ _VALIDATORS = {
     "display.brightness_dim":     _int_range(1, 100),
     "display.schedule_start":     _hhmm,
     "display.schedule_stop":      _hhmm,
+    "display.dim_start":          _hhmm,
+    "display.dim_stop":           _hhmm,
+    "display.accent":             _hex_color,
+    "display.idle_mode":          _idle_mode,
+    "display.clock_24h":          _as_bool,
     "ha.enabled":                 _as_bool,
     "ha.url":                     _url,
     "ha.token":                   str,
