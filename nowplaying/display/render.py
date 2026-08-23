@@ -388,10 +388,8 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             user = (current.user or "")[:sub_max_chars]
             graphics.DrawText(canvas, _font_sm, RX + 1, user_y, user_c, user)
 
-            # Interpolated, not the raw poll value — otherwise both of these
-            # visibly step every poll_seconds. See Session.live_offset_ms.
-            live_offset = current.live_offset_ms(now)
-            remaining = format_remaining(current.duration_ms, live_offset)
+            remaining = format_remaining(current.duration_ms,
+                                         current.view_offset_ms)
             if remaining:
                 graphics.DrawText(canvas, _font_sm, RX + 1, rem_y,
                                   remain_c, remaining)
@@ -401,7 +399,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             for bx in range(bar_x0, bar_x1 + 1):
                 for by in range(bar_y0, bar_y1 + 1):
                     canvas.SetPixel(bx, by, *config.PROGRESS_BG)
-            fill = int((bar_x1 - bar_x0) * current.live_progress(now))
+            fill = int((bar_x1 - bar_x0) * current.progress)
             for bx in range(bar_x0, bar_x0 + fill + 1):
                 for by in range(bar_y0, bar_y1 + 1):
                     canvas.SetPixel(bx, by, *accent_rgb)

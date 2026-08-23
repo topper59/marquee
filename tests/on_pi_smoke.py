@@ -767,30 +767,6 @@ with tempfile.TemporaryDirectory() as d:
     check("upgrading a config without filters gets the defaults",
           Config(legacy).get()["plex"]["filter"]["hide_paused"] is False)
 
-print("live playback position")
-now = time.monotonic()
-s_play = Session(session_key="k", title="t", subtitle="", user="u",
-                 progress=0.0, thumb_path="", duration_ms=600e3,
-                 view_offset_ms=60e3, state="playing", sampled_at=now)
-check("advances between polls",
-      abs(s_play.live_offset_ms(now + 5) - 65e3) < 1)
-check("progress advances with it",
-      abs(s_play.live_progress(now + 5) - (65e3 / 600e3)) < 1e-6)
-check("never runs past the end",
-      s_play.live_offset_ms(now + 10_000) == 600e3)
-check("progress clamps to 1", s_play.live_progress(now + 10_000) == 1.0)
-s_paused = Session(session_key="k", title="t", subtitle="", user="u",
-                   progress=0.0, thumb_path="", duration_ms=600e3,
-                   view_offset_ms=60e3, state="paused", sampled_at=now)
-check("a paused session holds still",
-      s_paused.live_offset_ms(now + 30) == 60e3)
-s_live = Session(session_key="k", title="t", subtitle="", user="u",
-                 progress=0.0, thumb_path="", duration_ms=0,
-                 view_offset_ms=0, state="playing", sampled_at=now)
-check("no duration means no progress", s_live.live_progress(now + 5) == 0.0)
-check("the time remaining counts down",
-      format_remaining(600e3, s_play.live_offset_ms(now + 5)) == "8m left")
-
 print("plex offline flag")
 
 with tempfile.TemporaryDirectory() as d:

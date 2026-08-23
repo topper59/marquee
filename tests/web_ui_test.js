@@ -75,7 +75,7 @@ w.fetch = async (url, opts) => {
 w.eval(fs.readFileSync(SRC + "picker.js", "utf8") + "\n" +
        fs.readFileSync(SRC + "app.js", "utf8") + "\n" +
        "window.__save = save;\nwindow.__renderCandidates = renderCandidates;\n" +
-       "window.__loadStatus = loadStatus;");
+       "window.__loadStatus = loadStatus;\nwindow.__loadSettings = loadSettings;");
 
 const $ = (s) => w.document.querySelector(s);
 const renderCandidatesForTest = () =>
@@ -369,6 +369,31 @@ const edit = (path, value) => {
         dbody["display.dim_start"] === "22:00" && dbody["display.dim_stop"] === "07:00");
   check("untouched display fields stayed out",
         dbody["display.cycle_seconds"] === undefined);
+
+  console.log("reset to Plex amber");
+  await settle();
+  check("no reset offered while already amber", $("#accent-default").hidden);
+  edit("display.accent", "#3aa0ff");
+  check("reset appears once the colour differs", !$("#accent-default").hidden);
+  $("#accent-default").click(); await settle();
+  check("the button restores plex amber",
+        field("display.accent").value === "#e5a00d");
+  check("and hides itself again", $("#accent-default").hidden);
+  // Back at the stored value, so there is nothing left to save.
+  check("resetting to the saved colour leaves nothing pending", $("#save").disabled);
+
+  // From a *saved* non-amber colour the reset is a real edit and must save.
+  CFG.display.accent = "#3aa0ff";
+  await w.__loadSettings(); await settle();
+  check("reset is offered for a saved non-amber colour", !$("#accent-default").hidden);
+  $("#accent-default").click(); await settle();
+  check("resetting marks the section dirty", !$("#save").disabled);
+  posted = [];
+  await w.__save();
+  const abody = posted.find((p) => p.url === "/api/settings").body;
+  check("the reset posts plex amber", abody["display.accent"] === "#e5a00d");
+  CFG.display.accent = "#e5a00d";
+  await w.__loadSettings(); await settle();
 
   console.log("display edits revert with the section");
   await settle();

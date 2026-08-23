@@ -177,7 +177,10 @@
 
       <h3>Colour</h3>
       <label class="colour-row">Accent
-        <input type="color" data-path="display.accent">
+        <span class="colour-controls">
+          <button id="accent-default" type="button" class="linkish" hidden>Reset to Plex amber</button>
+          <input type="color" data-path="display.accent">
+        </span>
       </label>
       <p class="hint">Used for the progress bar, the time remaining, and the
         setup screens. The default is Plex amber.</p>

@@ -41,6 +41,7 @@ function revertSection(section) {
   syncSliders();
   syncGroups();
   applyTheme();
+  showAccentDefault();
   if (section === "network") {
     showStaticFields();
     // Any complaint about the values just thrown away goes with them; a live
@@ -110,6 +111,7 @@ async function loadSettings() {
   applyConfigToFields(cfg);
   showStaticFields();
   applyTheme();
+  showAccentDefault();
   updateSaveState();
   $("#menu-ha-sub").textContent = cfg.ha.enabled ? "On" : "Off";
   $("#menu-filters-sub").textContent = filtersSummary(cfg.plex.filter);
@@ -393,6 +395,25 @@ async function showPasswordState() {
 window.onServerSaved = showCurrentServer;
 
 bindGroups();
+
+/* The colour well gives no clue what the stock colour was, and "Plex amber"
+   is not a thing anyone can pick out of a colour picker by eye. The button
+   only appears when it would do something. */
+const PLEX_AMBER = "#e5a00d";
+
+function showAccentDefault() {
+  $("#accent-default").hidden = field("display.accent").value === PLEX_AMBER;
+}
+
+$("#accent-default").addEventListener("click", () => {
+  const el = field("display.accent");
+  el.value = PLEX_AMBER;
+  // Same path a manual pick takes, so the section goes dirty and Save picks
+  // it up — resetting the colour is an edit like any other, not an action.
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+});
+
+field("display.accent").addEventListener("change", showAccentDefault);
 
 field("web.theme").addEventListener("change", applyTheme);
 

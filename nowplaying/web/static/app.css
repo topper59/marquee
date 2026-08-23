@@ -344,6 +344,11 @@ summary { color: var(--link); font-size: 14px; cursor: pointer; }
   justify-content: space-between;
   gap: .75rem;
 }
+.colour-controls {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
 .colour-row input[type=color] {
   width: 3rem;
   height: 2rem;

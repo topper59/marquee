@@ -248,12 +248,15 @@ time.
   back to the clock before anything has played.
 - An outage outranks all three idle modes, `blank` included: a dark panel is
   exactly what someone would misread as "it broke".
-- The progress bar and time remaining come from `Session.live_offset_ms`,
-  which advances the last polled `viewOffset` by the wall time since it was
-  sampled. Without it both step visibly once per `poll_seconds`. Paused
-  sessions hold still, and the next poll resets the base so drift cannot
-  accumulate. `Session.progress` is still the raw poll value — the API
-  reports it; the panel does not use it.
+- The progress bar and time remaining are drawn straight from the polled
+  `viewOffset`. **Do not interpolate between polls** — this was tried and
+  reverted. PMS only refreshes `viewOffset` about every 10s (measured: clean
+  `+10.0` steps with zeros between, on every concurrent session), so with a
+  5s poll the interpolated position runs ahead and the next poll hands back
+  the same stale value, making the time remaining visibly count down and then
+  jump back up. It buys nothing even when it works: `format_remaining` is
+  whole minutes above 60s, and the bar is 62px, which on a 90-minute movie is
+  ~87s per pixel.
 - An unreachable Plex server draws "Can't reach Plex" in the idle branch
   rather than as a `DisplayMode` status page, deliberately: status pages are
   drawn ahead of the schedule gate, and a notice that lights the panel at 3am
