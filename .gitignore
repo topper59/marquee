@@ -1,3 +1,4 @@
 pi/etc/plex-matrix.env
 __pycache__/
 *.pyc
+node_modules/

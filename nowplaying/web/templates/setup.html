@@ -4,9 +4,13 @@
 
 <div id="steps">
 
-  <!-- Step 1: WiFi (only shown while the device runs its setup AP) -->
+  <!-- Step 1: WiFi (only shown while the device runs its setup AP).
+       No text input is visible until the user asks for one: the iOS captive
+       portal sheet aggressively focuses the first visible input and pops the
+       keyboard, which made the network list unusable. -->
   <div class="card step" id="step-wifi" hidden>
     <h2><span class="stepnum">1</span> Connect to your WiFi</h2>
+    <p class="hint">Pick your home WiFi network:</p>
     <ul id="wifi-list" class="netlist"></ul>
     <button id="wifi-rescan" type="button">Rescan</button>
     <div id="wifi-join" hidden>
@@ -14,14 +18,18 @@
       <label>Password
         <input type="password" id="wifi-psk" autocomplete="off">
       </label>
+      <p class="hint">After you tap Connect, this setup window will close while
+        the display joins your WiFi. <b>Reconnect your phone to your own WiFi,
+        then open nowplaying.local in your browser</b> to finish setup.</p>
       <button id="wifi-connect" class="primary" type="button">Connect</button>
     </div>
-    <label>Network not listed?
+    <details>
+      <summary>Network not listed?</summary>
       <span class="manual-row">
         <input type="text" id="wifi-manual" placeholder="Network name (SSID)">
         <button id="wifi-manual-use" type="button">Use</button>
       </span>
-    </label>
+    </details>
     <p class="hint" id="wifi-msg" hidden></p>
   </div>
 
@@ -47,9 +55,13 @@
       </div>
       <ul id="plex-candidates" hidden></ul>
       <div id="plex-link" hidden>
-        <p>Enter this code at <b>plex.tv/link</b> (it is also on the display):</p>
+        <p>Enter this code at
+          <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a>
+          (opens in a new tab — come back to this tab after linking).
+          The code is also shown on the display:</p>
         <div id="plex-code" class="linkcode"></div>
         <p class="hint" id="plex-link-status">Waiting for you to enter the code…</p>
+        <button id="plex-link-cancel" type="button">Cancel sign-in</button>
       </div>
       <label>Or enter the address yourself
         <span class="manual-row">
@@ -64,14 +76,20 @@
   <!-- Step 3: preferences -->
   <div class="card step" id="step-prefs" hidden>
     <h2><span class="stepnum">3</span> Display preferences</h2>
-    <label>Seconds to show each item
+    <label>Seconds to show each stream
       <input type="number" data-path="display.cycle_seconds" min="2" max="3600">
     </label>
-    <div class="row">
-      <label>Brightness
-        <input type="number" data-path="display.brightness_normal" min="1" max="100">
-      </label>
-    </div>
+    <p class="hint">When more than one thing is playing on Plex, the display
+      rotates between the streams; this is how long each one stays on screen.</p>
+    <label>Brightness
+      <span class="slider-row">
+        <input type="range" data-path="display.brightness_normal"
+               min="1" max="100" step="1">
+        <input type="number" class="slider-num" min="1" max="100"
+               data-slider-for="display.brightness_normal" aria-label="Brightness">
+        <span class="unit">%</span>
+      </span>
+    </label>
     <div class="row">
       <label>Display on from
         <input type="time" data-path="display.schedule_start">
@@ -80,8 +98,9 @@
         <input type="time" data-path="display.schedule_stop">
       </label>
     </div>
-    <p class="hint">Set both to 00:00 to keep the display on around the clock.
-      Everything can be changed later at http://nowplaying.local.</p>
+    <p class="hint">Set both to midnight (12:00 AM) to keep the display on
+      around the clock. Everything can be changed later at
+      http://nowplaying.local.</p>
     <button id="finish" class="primary" type="button">Finish setup</button>
   </div>
 

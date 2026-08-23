@@ -137,6 +137,70 @@ with tempfile.TemporaryDirectory() as td:
         check("unknown key rejected", True)
     check("failed update leaves value", c.get()["display"]["cycle_seconds"] == 15)
 
+    # Static addressing: a bad address on this device's only link strands it,
+    # so validation is deliberately strict.
+    for bad in ("192.168.1", "192.168.1.256", "192.168.1.1.1",
+                "192.168.01.5", "not.an.ip.addr", "192.168.1.a"):
+        try:
+            c.update({"network.ipv4_address": bad})
+            check(f"bad ipv4 rejected ({bad})", False)
+        except ValueError:
+            check(f"bad ipv4 rejected ({bad})", True)
+    c.update({"network.ipv4_address": "192.168.2.50",
+              "network.ipv4_gateway": "192.168.2.1",
+              "network.ipv4_dns": "192.168.2.1 1.1.1.1",
+              "network.ipv4_method": "manual"})
+    check("ipv4 address stored", c.get()["network"]["ipv4_address"] == "192.168.2.50")
+    check("dns list normalized", c.get()["network"]["ipv4_dns"] == "192.168.2.1, 1.1.1.1")
+    check("empty ipv4 allowed under DHCP",
+          c.update({"network.ipv4_method": "auto", "network.ipv4_gateway": ""})
+          == {"network.ipv4_method", "network.ipv4_gateway"})
+    try:
+        c.update({"network.ipv4_method": "dhcp"})
+        check("unknown ipv4 method rejected", False)
+    except ValueError:
+        check("unknown ipv4 method rejected", True)
+    check("addressing is not a restart-required change",
+          not ({"network.ipv4_method", "network.ipv4_address"} & cfgmod.RESTART_REQUIRED))
+
+    # Cross-field rules: a half-filled static address must be refused at save
+    # time, not discovered by the device after it has dropped off the network.
+    c.update({"network.ipv4_method": "auto", "network.ipv4_address": "",
+              "network.ipv4_gateway": "", "network.ipv4_prefix": 24})
+    for name, bad in (
+            ("manual with nothing filled in", {"network.ipv4_method": "manual"}),
+            ("manual without a gateway",
+             {"network.ipv4_method": "manual", "network.ipv4_address": "192.168.2.50"}),
+            ("manual without an address",
+             {"network.ipv4_method": "manual", "network.ipv4_gateway": "192.168.2.1"}),
+            ("gateway off the subnet",
+             {"network.ipv4_method": "manual", "network.ipv4_address": "192.168.2.50",
+              "network.ipv4_gateway": "10.0.0.1"}),
+            ("prefix that excludes the gateway",
+             {"network.ipv4_method": "manual", "network.ipv4_address": "192.168.2.50",
+              "network.ipv4_gateway": "192.168.2.1", "network.ipv4_prefix": 30})):
+        try:
+            c.update(bad)
+            check(f"rejected: {name}", False)
+        except ValueError:
+            check(f"rejected: {name}", True)
+    check("rejected combination changes nothing",
+          c.get()["network"]["ipv4_method"] == "auto"
+          and c.get()["network"]["ipv4_address"] == ""
+          and c.get()["network"]["ipv4_prefix"] == 24)
+    check("complete static address accepted",
+          c.update({"network.ipv4_method": "manual",
+                    "network.ipv4_address": "192.168.2.50",
+                    "network.ipv4_gateway": "192.168.2.1",
+                    "network.ipv4_prefix": 24}))
+    check("returning to auto needs no addresses",
+          "network.ipv4_method" in c.update({"network.ipv4_method": "auto"}))
+    # An unrelated save must never be blocked by stored addressing.
+    c.update({"network.ipv4_method": "manual"})   # valid: addresses still stored
+    check("unrelated settings still savable",
+          c.update({"plex.poll_seconds": 11}) == {"plex.poll_seconds"})
+    c.update({"network.ipv4_method": "auto"})
+
     c2 = Config(path)
     check("persisted across reload", c2.get()["display"]["cycle_seconds"] == 15)
     check("client id stable", c2.get()["device"]["client_id"] == d["device"]["client_id"])
@@ -161,6 +225,8 @@ with tempfile.TemporaryDirectory() as td:
     check("legacy tv entity default kept", md["ha"]["tv_entity"] == "media_player.living_room_tv")
     check("migrated device provisioned", md["provisioned"] is True)
     check("migration leaves network alone", md["network"]["manage"] is False)
+    check("migration defaults to DHCP", md["network"]["ipv4_method"] == "auto")
+    check("migration keeps sunset requirement", md["ha"]["require_sunset"] is True)
     check("unknown env keys ignored", "TAUTULLI_URL" not in json.dumps(md))
 
     # Factory-reset marker suppresses migration
@@ -176,6 +242,66 @@ with tempfile.TemporaryDirectory() as td:
     check("corrupt file recovers", cb.get()["display"]["cycle_seconds"] == 10)
     check("corrupt file preserved", os.path.exists(bad + ".corrupt"))
 
+print("factory reset")
+from nowplaying import factoryreset  # noqa: E402
+from nowplaying.netmgr import STATION_CON  # noqa: E402
+
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".factory-reset")
+
+    # Neither nmcli nor systemd-run may actually run from a test, and the
+    # default config path must be redirected — main() with no argument would
+    # otherwise wipe this Pi's real /var/lib/nowplaying/config.json.
+    ran = []
+    cpath = os.path.join(td, "wipe.json")
+    real_run, real_popen = factoryreset.subprocess.run, factoryreset.subprocess.Popen
+    real_cfg_path = cfgmod.CONFIG_PATH
+    factoryreset.subprocess.run = lambda args, **kw: ran.append(args)
+    factoryreset.subprocess.Popen = lambda args, **kw: ran.append(args)
+    cfgmod.CONFIG_PATH = cpath
+    try:
+        Config(cpath)
+        check("config exists before reset", os.path.exists(cpath))
+
+        factoryreset.reset(cpath, keep_wifi=True, restart=False)
+        check("reset removes config", not os.path.exists(cpath))
+        check("reset writes no-migrate marker",
+              os.path.exists(cfgmod.NO_MIGRATE_MARKER))
+        check("keep_wifi leaves profiles alone", not ran)
+
+        try:
+            factoryreset.reset(cpath, keep_wifi=True, restart=False)
+            check("reset of a missing config does not raise", True)
+        except Exception as e:
+            check(f"reset of a missing config does not raise ({e})", False)
+
+        # A wiped config must come back unprovisioned, i.e. into the wizard.
+        check("device is unprovisioned after reset",
+              Config(cpath).get()["provisioned"] is False)
+
+        ran.clear()
+        factoryreset.reset(cpath, keep_wifi=False, restart=True)
+        deleted = [a for a in ran if a[:3] == ["nmcli", "con", "delete"]]
+        check("full reset deletes the station profile",
+              any(STATION_CON in a for a in deleted))
+        check("full reset schedules a restart",
+              any("systemd-run" in a[0] for a in ran))
+
+        # Argument parsing: a typo must not be silently read as a full wipe.
+        ran.clear()
+        check("CLI rejects unknown args", factoryreset.main(["--wipe-everything"]) == 2)
+        check("rejected CLI args do nothing", not ran)
+        check("CLI --keep-wifi -y runs",
+              factoryreset.main(["--keep-wifi", "-y", "--no-restart"]) == 0)
+        check("CLI --keep-wifi kept profiles", not ran)
+        check("CLI full reset deletes profiles",
+              factoryreset.main(["-y", "--no-restart"]) == 0 and ran)
+    finally:
+        factoryreset.subprocess.run = real_run
+        factoryreset.subprocess.Popen = real_popen
+        cfgmod.CONFIG_PATH = real_cfg_path
+
 print("NetManager")
 import threading
 from nowplaying.netmgr import NetManager, AP_CON, STATION_CON
@@ -188,6 +314,9 @@ class FakeNM:
         self.profiles = {}
         self.wlan = "disconnected"
         self.fail_join = False
+        self.fail_up = set()      # profile names whose `con up` fails
+        self.ipv4 = {}            # profile → {nmcli property: value}
+        self.active = ""
         self.calls = []
 
     def __call__(self, args, timeout=None):
@@ -200,20 +329,33 @@ class FakeNM:
         if "con add" in j:
             self.profiles[args[args.index("con-name") + 1]] = True
             return 0, ""
+        if "con mod" in j:
+            name = args[3]
+            if name not in self.profiles:
+                return 1, ""
+            props = self.ipv4.setdefault(name, {})
+            for k, v in zip(args[4::2], args[5::2]):
+                props[k] = v
+            return 0, ""
         if "con delete" in j:
             self.profiles.pop(args[-1], None)
             return 0, ""
         if "con up" in j:
             name = args[-1]
-            if name == STATION_CON and self.fail_join:
+            if (name == STATION_CON and self.fail_join) or name in self.fail_up:
+                self.wlan = "disconnected"
                 return 1, ""
             self.wlan = "connected"
+            self.active = name
             return 0, ""
         if "con down" in j:
             self.wlan = "disconnected"
+            self.active = ""
             return 0, ""
         if "dev status" in j:
             return 0, f"wlan0:{self.wlan}\nlo:unmanaged\n"
+        if "GENERAL.CONNECTION" in j:
+            return 0, f"GENERAL.CONNECTION:{self.active or '--'}\n"
         if "dev show" in j:
             return 0, "IP4.ADDRESS[1]:192.168.5.7/24\n"
         return 0, ""
@@ -270,6 +412,119 @@ with tempfile.TemporaryDirectory() as td:
     nstop.set()
     nm.join(timeout=5)
 
+print("static addressing")
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
+    ic = Config(os.path.join(td, "ip.json"))
+    ifake = FakeNM()
+    ifake.profiles[STATION_CON] = True
+    ifake.active = STATION_CON
+    inm = NetManager(ic, State(), threading.Event(), run_cmd=ifake)
+
+    check("active profile found", inm.active_station_profile() == STATION_CON)
+    ifake.active = AP_CON
+    check("AP is never the station profile",
+          inm.active_station_profile() == STATION_CON)
+    ifake.active = STATION_CON
+
+    check("manual needs an address",
+          "gateway" in inm.apply_ipv4({"ipv4_method": "manual", "ipv4_address": "",
+                                       "ipv4_prefix": 24, "ipv4_gateway": "",
+                                       "ipv4_dns": ""}))
+
+    manual = {"ipv4_method": "manual", "ipv4_address": "192.168.2.50",
+              "ipv4_prefix": 24, "ipv4_gateway": "192.168.2.1",
+              "ipv4_dns": "192.168.2.1, 1.1.1.1"}
+    check("manual applies cleanly", inm.apply_ipv4(manual) == "")
+    props = ifake.ipv4[STATION_CON]
+    check("address written with prefix", props["ipv4.addresses"] == "192.168.2.50/24")
+    check("gateway written", props["ipv4.gateway"] == "192.168.2.1")
+    check("dns written", props["ipv4.dns"] == "192.168.2.1, 1.1.1.1")
+    check("method manual", props["ipv4.method"] == "manual")
+
+    # The whole point of the rollback: a static address that will not come up
+    # must not leave this device unreachable on its only link.
+    ifake.fail_up.add(STATION_CON)
+    err = inm.apply_ipv4(manual)
+    check("failed apply reports an error", bool(err) and "DHCP" in err)
+    check("failed apply reverts to DHCP",
+          ifake.ipv4[STATION_CON]["ipv4.method"] == "auto")
+    check("revert clears the static address",
+          ifake.ipv4[STATION_CON]["ipv4.addresses"] == "")
+    ifake.fail_up.clear()
+
+    check("auto applies cleanly",
+          inm.apply_ipv4({"ipv4_method": "auto", "ipv4_address": "",
+                          "ipv4_prefix": 24, "ipv4_gateway": "",
+                          "ipv4_dns": ""}) == "")
+    check("auto clears the gateway", ifake.ipv4[STATION_CON]["ipv4.gateway"] == "")
+
+    # Applies only on change, and a rollback puts the config back in step
+    # with what the device is actually doing.
+    ifake.calls.clear()
+    inm._maybe_apply_ipv4()
+    check("unchanged config touches nothing",
+          not [c for c in ifake.calls if "con mod" in c])
+    ic.update({"network.ipv4_method": "manual",
+               "network.ipv4_address": "192.168.2.50",
+               "network.ipv4_gateway": "192.168.2.1"})
+    inm._maybe_apply_ipv4()
+    check("changed config is applied",
+          ifake.ipv4[STATION_CON]["ipv4.method"] == "manual" and not inm.ipv4_error)
+
+    ifake.fail_up.add(STATION_CON)
+    ic.update({"network.ipv4_address": "192.168.9.99",
+               "network.ipv4_gateway": "192.168.9.1"})
+    inm._maybe_apply_ipv4()
+    check("rollback surfaces an error", bool(inm.ipv4_error))
+    check("rollback rewrites the config to auto",
+          ic.get()["network"]["ipv4_method"] == "auto")
+    ifake.calls.clear()
+    inm._maybe_apply_ipv4()
+    check("a failed apply is not retried every pass",
+          not [c for c in ifake.calls if "con mod" in c])
+
+    check("no profile is an error, not a crash",
+          NetManager(ic, State(), threading.Event(),
+                     run_cmd=FakeNM()).apply_ipv4(manual) != "")
+
+    # The notice outlives the attempt (the browser is disconnected when it
+    # happens), so it has to be dismissible or a new attempt has to clear it.
+    inm.ipv4_error = "stale"
+    inm.clear_ipv4_error()
+    check("error can be dismissed", inm.ipv4_error == "")
+
+print("HA dim rule")
+from nowplaying.ha import HomeAssistant  # noqa: E402
+
+
+class FakeHA(HomeAssistant):
+    def __init__(self, states):
+        self.states = states
+        self.asked = []
+
+    def get_state(self, entity_id):
+        self.asked.append(entity_id)
+        return self.states.get(entity_id)
+
+
+TV = "media_player.tv"
+for tv, sun, want_sunset, want_always in (
+        ("playing", "below_horizon", True, True),
+        ("playing", "above_horizon", False, True),
+        ("off",     "below_horizon", False, False),
+        (None,      "below_horizon", False, False),
+        ("standby", "below_horizon", False, False)):
+    ha = FakeHA({TV: tv, "sun.sun": sun})
+    check(f"tv={tv} sun={sun} → dim after sunset {want_sunset}",
+          ha.should_dim(TV, True) is want_sunset)
+    ha2 = FakeHA({TV: tv, "sun.sun": sun})
+    check(f"tv={tv} sun={sun} → dim whenever on {want_always}",
+          ha2.should_dim(TV, False) is want_always)
+    check(f"tv={tv}: sun not consulted when not required",
+          "sun.sun" not in ha2.asked)
+
 print("web link flow")
 with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
@@ -313,6 +568,123 @@ with tempfile.TemporaryDirectory() as td:
     client.post("/api/plex/auth/cancel")
     check("cancel does not stomp other screens",
           wstate.get_mode()[0] is DisplayMode.SETUP)
+
+print("plex sign-in cancel")
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
+    import nowplaying.web.server as websrv
+
+    websrv.plex_auth = types.SimpleNamespace(
+        pin_create=lambda cid: {"id": 7, "code": "ABCD"},
+        pin_poll=lambda cid, pid: {"token": "", "expired": False},
+        account_servers=lambda cid, tok: [],
+    )
+    pc = Config(os.path.join(td, "cancel.json"))
+    pstate = State()
+    pclient = websrv.create_app(pc, pstate).test_client()
+
+    pclient.post("/api/plex/auth/start", json={})
+    check("code is on the panel", pstate.get_mode()[0] is DisplayMode.LINK_CODE)
+    r = pclient.post("/api/plex/auth/cancel")
+    check("cancel is accepted", r.status_code == 200)
+    check("cancel takes the code off the panel",
+          pstate.get_mode()[0] is DisplayMode.NORMAL)
+    # sendBeacon posts with no JSON body and a text/plain content type.
+    pclient.post("/api/plex/auth/start", json={})
+    r = pclient.post("/api/plex/auth/cancel", data="",
+                     content_type="text/plain;charset=UTF-8")
+    check("a beacon-shaped cancel works too",
+          r.status_code == 200 and pstate.get_mode()[0] is DisplayMode.NORMAL)
+    # Cancelling twice, or with nothing running, must not blow up or disturb
+    # whatever else the panel is showing.
+    r = pclient.post("/api/plex/auth/cancel")
+    check("cancelling nothing is harmless", r.status_code == 200)
+    pstate.set_mode(DisplayMode.SETUP, ssid="X", url="1.2.3.4")
+    pclient.post("/api/plex/auth/cancel")
+    check("cancel does not clear an unrelated screen",
+          pstate.get_mode()[0] is DisplayMode.SETUP)
+
+print("theme")
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
+    import nowplaying.web.server as websrv
+
+    tc = Config(os.path.join(td, "theme.json"))
+    check("defaults to following the viewer's device",
+          tc.get()["web"]["theme"] == "auto")
+    check("theme needs no restart", "web.theme" not in cfgmod.RESTART_REQUIRED)
+    try:
+        tc.update({"web.theme": "solarized"})
+        check("unknown theme rejected", False)
+    except ValueError:
+        check("unknown theme rejected", True)
+
+    tclient = websrv.create_app(tc, State()).test_client()
+    # Rendered server-side: setting it from JS would flash the wrong palette.
+    body = tclient.get("/").get_data(as_text=True)
+    check("theme rendered into the page", 'data-theme="auto"' in body)
+    tc.update({"web.theme": "dark"})
+    check("theme change reaches the next render",
+          'data-theme="dark"' in tclient.get("/").get_data(as_text=True))
+    # The login page renders before any session exists, so it needs it too.
+    tc.update({"web.password": "0" * 64})
+    check("login page is themed too",
+          'data-theme="dark"' in tclient.get("/login").get_data(as_text=True))
+
+print("web factory reset")
+with tempfile.TemporaryDirectory() as td:
+    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
+    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
+    import nowplaying.web.server as websrv
+
+    # systemd-run must not actually fire from a test — this Pi would wipe
+    # itself. Capture the argv instead and check what would have run.
+    spawned = []
+    real_popen = websrv.subprocess.Popen
+    websrv.subprocess.Popen = lambda args, **kw: spawned.append(args)
+    try:
+        rc = Config(os.path.join(td, "reset.json"))
+        rstate = State()
+        rclient = websrv.create_app(rc, rstate).test_client()
+
+        r = rclient.post("/api/factory-reset", json={})
+        check("reset without confirmation refused", r.status_code == 400)
+        check("refused reset spawns nothing", not spawned)
+        r = rclient.post("/api/factory-reset", json={"confirm": "yes"})
+        check("only a real true confirms", r.status_code == 400 and not spawned)
+
+        r = rclient.post("/api/factory-reset", json={"confirm": True})
+        check("confirmed reset accepted", r.status_code == 200)
+        check("reset runs detached", spawned and spawned[0][0] == "systemd-run")
+        argv = " ".join(spawned[0])
+        check("reset runs the shared implementation",
+              "nowplaying.factoryreset" in argv and " -y" in argv)
+        check("full reset does not keep wifi", "--keep-wifi" not in argv)
+        check("reset starts in the package directory",
+              f"WorkingDirectory={websrv.PACKAGE_ROOT}" in argv)
+        check("reset uses this interpreter", sys.executable in argv)
+        check("panel says what is happening",
+              rstate.get_mode()[0] is DisplayMode.INFO)
+
+        spawned.clear()
+        r = rclient.post("/api/factory-reset",
+                         json={"confirm": True, "keep_wifi": True})
+        check("keep-wifi reset accepted",
+              r.status_code == 200 and r.get_json()["keep_wifi"] is True)
+        check("keep-wifi passes the flag", "--keep-wifi" in " ".join(spawned[0]))
+        check("keep-wifi tells the browser where to come back",
+              "nowplaying.local" in r.get_json()["reconnect_to"])
+
+        # The wipe itself must still be gated behind the password.
+        rc.update({"web.password": "0" * 64})
+        spawned.clear()
+        r = rclient.post("/api/factory-reset", json={"confirm": True})
+        check("reset needs the settings password", r.status_code == 401)
+        check("unauthorized reset spawns nothing", not spawned)
+    finally:
+        websrv.subprocess.Popen = real_popen
 
 print("parse_hhmm")
 check("parses", parse_hhmm("07:30").hour == 7)

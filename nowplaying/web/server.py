@@ -7,8 +7,10 @@ app.py wraps startup, and all handlers only touch the Config/State objects.
 
 import hashlib
 import logging
+import os
 import secrets
 import subprocess
+import sys
 import threading
 import time
 
@@ -19,7 +21,7 @@ from flask import redirect
 import nowplaying
 from nowplaying.config import RESTART_REQUIRED
 from nowplaying.display.state import DisplayMode
-from nowplaying.netmgr import AP_IP
+from nowplaying.netmgr import AP_IP, local_ip, wifi_mac
 from nowplaying.plex import auth as plex_auth
 from nowplaying.plex.discovery import gdm_discover, probe_server
 
@@ -35,6 +37,12 @@ CAPTIVE_PROBES = ("/generate_204", "/gen_204", "/hotspot-detect.html",
 PIN_PANEL_TTL = 16 * 60
 
 log = logging.getLogger("plex-matrix")
+
+# The package is on the path rather than installed in the venv, so a detached
+# `python -m nowplaying.factoryreset` needs to start from the directory that
+# contains it (mirrors the WorkingDirectory= in the unit file).
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 
 # Secrets are never sent to the browser; this placeholder round-trips instead.
 SENTINEL = "•••"
@@ -62,6 +70,15 @@ def create_app(config, state, netmgr=None) -> Flask:
 
     def in_ap_mode() -> bool:
         return netmgr is not None and netmgr.in_ap_mode()
+
+    @app.context_processor
+    def inject_theme():
+        """Render the theme into <html> so the first paint is already right.
+
+        Setting it from JS after load would flash the wrong palette, which is
+        exactly what someone picking dark mode is trying to avoid.
+        """
+        return {"theme": config.get()["web"]["theme"]}
 
     # ── Optional settings password ────────────────────────────────────────
     @app.before_request
@@ -146,6 +163,12 @@ def create_app(config, state, netmgr=None) -> Flask:
             sessions = [{"title": s.title, "user": s.user, "state": s.state}
                         for s in state.sessions]
             dim = state.dim
+        ip = ssid = ""
+        if not in_ap_mode():
+            # local_ip() covers unmanaged devices (network.manage=false),
+            # where netmgr never learns an address.
+            ip = (netmgr.ip_address() if netmgr else "") or local_ip()
+            ssid = netmgr.connected_ssid() if netmgr else ""
         return jsonify({
             "device": cfg["device"]["name"],
             "version": nowplaying.__version__,
@@ -156,7 +179,11 @@ def create_app(config, state, netmgr=None) -> Flask:
             "network": {
                 "status": netmgr.status if netmgr else "passive",
                 "error": netmgr.last_error if netmgr else "",
-                "ip": netmgr.ip_address() if netmgr and not netmgr.in_ap_mode() else "",
+                "ip": ip,
+                "ssid": ssid,
+                "mac": netmgr.mac_address() if netmgr else wifi_mac(),
+                "ipv4_method": cfg["network"]["ipv4_method"],
+                "ipv4_error": netmgr.ipv4_error if netmgr else "",
             },
         })
 
@@ -179,6 +206,9 @@ def create_app(config, state, netmgr=None) -> Flask:
             changed = config.update(patch)
         except (ValueError, TypeError) as e:
             return jsonify({"error": str(e)}), 400
+        # A fresh addressing attempt supersedes whatever the last one said.
+        if netmgr is not None and any(k.startswith("network.ipv4") for k in patch):
+            netmgr.clear_ipv4_error()
         return jsonify({
             "changed": sorted(changed),
             "restart_required": sorted(changed & RESTART_REQUIRED),
@@ -318,6 +348,43 @@ def create_app(config, state, netmgr=None) -> Flask:
         if last and last.get("ok") and last.get("auth_required"):
             err = "this server requires Plex sign-in"
         return jsonify({"saved": False, "error": err}), 502
+
+    @app.post("/api/network/clear-error")
+    def clear_network_error():
+        if netmgr is not None:
+            netmgr.clear_ipv4_error()
+        return jsonify({"ok": True})
+
+    @app.post("/api/factory-reset")
+    def factory_reset():
+        """Wipe the device back to out-of-box state.
+
+        The reply has to reach the browser before anything is deleted: a full
+        reset drops the WiFi profile, and on this hardware that is the only
+        link. So the wipe runs on a short timer in a detached process, exactly
+        like the SSH path, and this handler only schedules it.
+        """
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") is not True:
+            return jsonify({"error": "confirmation required"}), 400
+        keep_wifi = bool(body.get("keep_wifi"))
+
+        log.warning("FACTORY RESET requested from the web UI (keep_wifi=%s)",
+                    keep_wifi)
+        state.set_mode(DisplayMode.INFO,
+                       lines=["Factory reset", "", "restarting…"])
+        args = [sys.executable, "-m", "nowplaying.factoryreset", "-y"]
+        if keep_wifi:
+            args.append("--keep-wifi")
+        subprocess.Popen(
+            ["systemd-run", "--collect", "--on-active=2",
+             f"--unit=np-web-reset-{int(time.time())}",
+             "-p", f"WorkingDirectory={PACKAGE_ROOT}"] + args)
+        return jsonify({
+            "ok": True,
+            "keep_wifi": keep_wifi,
+            "reconnect_to": "http://nowplaying.local/" if keep_wifi else "",
+        })
 
     @app.post("/api/restart")
     def restart():

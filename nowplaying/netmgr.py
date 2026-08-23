@@ -35,6 +35,9 @@ STATION_CON = "nowplaying-wifi"
 AP_IP = "10.42.0.1"
 WIFI_DEV = "wlan0"
 
+# Seconds between accepting portal credentials and tearing down the AP.
+AP_HANDOFF_GRACE_S = 8
+
 
 def default_run_cmd(args: list[str], timeout: float = 45):
     """Run a command, returning (rc, stdout). Never raises on failure rc."""
@@ -51,6 +54,15 @@ def default_run_cmd(args: list[str], timeout: float = 45):
 
 def _unescape_nmcli(field: str) -> str:
     return field.replace("\\:", ":").replace("\\\\", "\\")
+
+
+def wifi_mac() -> str:
+    """wlan0's hardware address, upper-case ('' if the interface is absent)."""
+    try:
+        with open(f"/sys/class/net/{WIFI_DEV}/address") as f:
+            return f.read().strip().upper()
+    except OSError:
+        return ""
 
 
 def local_ip() -> str:
@@ -84,6 +96,16 @@ class NetManager(threading.Thread):
         self.scan_cache: list[dict] = []
         self.status = "passive"     # passive|connecting|online|ap|joining
         self.last_error = ""
+        self.ipv4_error = ""
+        # Addressing is only pushed to NetworkManager when it *changes*; the
+        # profile already stores it across reboots, so re-applying every boot
+        # would drop the link for nothing.
+        self._ipv4_sig = self._ipv4_signature(config.get()["network"])
+
+    @staticmethod
+    def _ipv4_signature(net: dict) -> tuple:
+        return (net["ipv4_method"], net["ipv4_address"], net["ipv4_prefix"],
+                net["ipv4_gateway"], net["ipv4_dns"])
 
     # ── nmcli helpers ─────────────────────────────────────────────────────
     def wifi_scan(self) -> list[dict]:
@@ -145,14 +167,41 @@ class NetManager(threading.Thread):
                 return line.split(":", 1)[1].split("/")[0]
         return ""
 
+    def connected_ssid(self) -> str:
+        """SSID wlan0 is currently associated to ('' if none)."""
+        rc, out = self.run_cmd(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev",
+                                "wifi", "list", "--rescan", "no"])
+        for line in out.splitlines():
+            active, _, ssid = line.partition(":")
+            if active == "yes" and ssid:
+                return _unescape_nmcli(ssid)
+        return ""
+
+    def mac_address(self) -> str:
+        return wifi_mac()
+
+    def active_station_profile(self) -> str:
+        """Profile currently up on wlan0, ignoring the setup AP.
+
+        Prefers whatever nmcli says is active so a hand-provisioned device
+        (network.manage=false, some other profile name) can still be given a
+        static address; falls back to our own profile name.
+        """
+        rc, out = self.run_cmd(["nmcli", "-t", "-f", "GENERAL.CONNECTION",
+                                "dev", "show", WIFI_DEV])
+        for line in out.splitlines():
+            if line.startswith("GENERAL.CONNECTION"):
+                name = _unescape_nmcli(line.split(":", 1)[1]).strip()
+                if name and name not in ("--", AP_CON):
+                    return name
+        names = self.station_profile_names()
+        if STATION_CON in names:
+            return STATION_CON
+        return names[0] if names else ""
+
     def ap_ssid(self) -> str:
         prefix = self.config.get()["network"]["ap_ssid_prefix"]
-        try:
-            with open(f"/sys/class/net/{WIFI_DEV}/address") as f:
-                mac = f.read().strip().replace(":", "")
-            suffix = mac[-4:].upper()
-        except OSError:
-            suffix = "0000"
+        suffix = wifi_mac().replace(":", "")[-4:] or "0000"
         return f"{prefix}-{suffix}"
 
     def in_ap_mode(self) -> bool:
@@ -206,6 +255,76 @@ class NetManager(threading.Thread):
             self.stop_event.wait(2)
         return self.wlan_connected()
 
+    # ── static addressing ─────────────────────────────────────────────────
+    def _set_ipv4(self, profile: str, net: dict | None) -> bool:
+        """Write addressing onto `profile`. net=None means back to DHCP."""
+        if net is None or net["ipv4_method"] == "auto":
+            args = ["ipv4.method", "auto", "ipv4.addresses", "",
+                    "ipv4.gateway", "", "ipv4.dns", ""]
+        else:
+            args = ["ipv4.addresses", f"{net['ipv4_address']}/{net['ipv4_prefix']}",
+                    "ipv4.gateway", net["ipv4_gateway"],
+                    "ipv4.dns", net["ipv4_dns"],
+                    # method last: nmcli validates manual mode against the
+                    # address already set on the profile.
+                    "ipv4.method", "manual"]
+        rc, _ = self.run_cmd(["nmcli", "con", "mod", profile] + args)
+        return rc == 0
+
+    def apply_ipv4(self, net: dict) -> str:
+        """Push addressing onto the station profile. Returns "" or an error.
+
+        wlan0 is the only link on this hardware, so a static address that
+        does not come up is a stranded device. Anything short of a confirmed
+        connection rolls the profile back to DHCP and brings it up again.
+        """
+        manual = net["ipv4_method"] == "manual"
+        if manual and not (net["ipv4_address"] and net["ipv4_gateway"]):
+            return "a static address needs both an IP address and a gateway"
+        profile = self.active_station_profile()
+        if not profile:
+            return "no saved WiFi profile to configure"
+
+        log.info("Applying %s addressing to %s", net["ipv4_method"], profile)
+        if not self._set_ipv4(profile, net):
+            return "NetworkManager rejected those addressing settings"
+        rc, _ = self.run_cmd(["nmcli", "--wait", "30", "con", "up", profile],
+                             timeout=45)
+        if rc == 0 and self._wait_connected(20):
+            log.info("Addressing applied — now at %s", self.ip_address())
+            return ""
+
+        log.error("Static addressing did not come up — reverting %s to DHCP", profile)
+        self._set_ipv4(profile, None)
+        self.run_cmd(["nmcli", "--wait", "30", "con", "up", profile], timeout=45)
+        return ("that address did not come up — the display reverted to "
+                "automatic (DHCP)")
+
+    def _maybe_apply_ipv4(self):
+        """Apply addressing when, and only when, the config changed."""
+        net = self.config.get()["network"]
+        sig = self._ipv4_signature(net)
+        if sig == self._ipv4_sig:
+            return
+        # Record first: a failed apply must not retry on every loop pass.
+        self._ipv4_sig = sig
+        self.ipv4_error = self.apply_ipv4(net)
+        if self.ipv4_error:
+            # Reverting means the stored config now lies; put it back in step
+            # so the settings page shows what the device is actually doing.
+            self.config.update({"network.ipv4_method": "auto"})
+            self._ipv4_sig = self._ipv4_signature(self.config.get()["network"])
+
+    def clear_ipv4_error(self):
+        """Drop the last addressing failure notice.
+
+        The message outlives the attempt on purpose — the browser is almost
+        always disconnected at the moment a static address fails — so it has
+        to be dismissed explicitly or by a fresh attempt, or it would sit on
+        the settings page until the next restart.
+        """
+        self.ipv4_error = ""
+
     # ── portal API ────────────────────────────────────────────────────────
     def request_join(self, ssid: str, psk: str):
         with self._lock:
@@ -232,10 +351,18 @@ class NetManager(threading.Thread):
             self.state.set_mode(DisplayMode.ERROR,
                                 text="WiFi setup failed", hint="power cycle to retry")
 
+    def _passive_loop(self):
+        """network.manage=false: provisioning is off, but static addressing
+        is still ours to apply."""
+        while not self.stop_event.is_set():
+            self._maybe_apply_ipv4()
+            self.stop_event.wait(5)
+
     def run_loop(self):
         cfg = self.config.get()["network"]
         if not cfg["manage"]:
             log.info("Network management disabled (network.manage=false)")
+            self._passive_loop()
             return
 
         if self.station_profile_names():
@@ -259,12 +386,18 @@ class NetManager(threading.Thread):
                 self.status = "joining"
                 self.state.set_mode(DisplayMode.CONNECTING, ssid=ssid)
                 if was_ap:
-                    # Let the portal's HTTP response reach the phone first.
-                    self.stop_event.wait(3)
+                    # Let the portal's HTTP response reach the phone and give
+                    # the captive sheet a moment to show the reconnect
+                    # instructions before the AP (and the sheet) vanish.
+                    self.stop_event.wait(AP_HANDOFF_GRACE_S)
                     self._ap_down()
                 if self._join(ssid, psk):
                     self.status = "online"
                     self.last_error = ""
+                    if self.config.get()["network"]["ipv4_method"] == "manual":
+                        # _join rebuilds the profile from scratch, so a saved
+                        # static address has to be pushed onto it again.
+                        self._ipv4_sig = None
                     self.state.set_mode(DisplayMode.NORMAL)
                     log.info("Joined %s (%s)", ssid, self.ip_address())
                 else:
@@ -272,6 +405,7 @@ class NetManager(threading.Thread):
                     log.warning(self.last_error)
                     self._enter_ap()
             elif self.status == "online":
+                self._maybe_apply_ipv4()
                 if not self.wlan_connected() and not self.station_profile_names():
                     # Profile gone (e.g. deleted underneath us): back to setup.
                     log.warning("No WiFi profile remains — entering setup AP")

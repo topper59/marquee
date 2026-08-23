@@ -15,16 +15,13 @@ If the GPIO stack is unavailable (dev stubs, unsupported board) the feature
 logs once and disables itself.
 """
 
-import os
 import logging
-import subprocess
 import threading
 import time
 
 import nowplaying
-from nowplaying import config as cfgmod
+from nowplaying import factoryreset
 from nowplaying.display.state import State, DisplayMode
-from nowplaying.netmgr import AP_CON, STATION_CON
 
 log = logging.getLogger("plex-matrix")
 
@@ -58,21 +55,7 @@ class ResetButton(threading.Thread):
     def _factory_reset(self):
         log.warning("FACTORY RESET triggered by button")
         self.state.set_mode(DisplayMode.INFO, lines=["Factory reset", "", "restarting…"])
-        try:
-            os.makedirs(os.path.dirname(cfgmod.NO_MIGRATE_MARKER), exist_ok=True)
-            with open(cfgmod.NO_MIGRATE_MARKER, "w") as f:
-                f.write(str(time.time()) + "\n")
-        except OSError as e:
-            log.error("Could not write no-migrate marker: %s", e)
-        try:
-            os.remove(self.config.path)
-        except OSError:
-            pass
-        for con in (STATION_CON, AP_CON):
-            subprocess.run(["nmcli", "con", "delete", con],
-                           capture_output=True, timeout=15)
-        subprocess.Popen(["systemd-run", "--collect", "--on-active=2",
-                          "systemctl", "restart", "plex-matrix.service"])
+        factoryreset.reset(self.config.path)
 
     def run(self):
         try:

@@ -1,12 +1,69 @@
+/* Theme. `data-theme` is rendered into <html> by the server (config
+   web.theme) so the first paint is already correct; "auto" defers to the
+   viewer's own light/dark setting. `color-scheme` is what makes the native
+   controls — checkboxes, selects, time pickers, scrollbars — follow along. */
 :root {
-  --bg: #0d1117;
-  --card: #161b22;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #e5a00d;   /* plex amber */
-  --accent-dark: #b57f0a;
-  --danger: #da3633;
+  /* Dark values live here once and are mapped in below. "Forced dark" and
+     "auto, on a dark device" are genuinely two different conditions and CSS
+     cannot express them in one selector — but only the mapping repeats, so
+     the two can never drift apart on colour. Warm near-black, to sit with the
+     amber rather than fight it; note that two roles inverse rather than
+     darken — the hover accent goes *lighter* than the accent, and links and
+     danger have to lift off the dark ground instead of sinking into it. */
+  --dk-bg: #16140f;
+  --dk-card: #211e17;
+  --dk-field: #1b1813;
+  --dk-border: #3a352b;
+  --dk-text: #ece7dc;
+  --dk-muted: #a49b8b;
+  --dk-accent-dark: #f2b53c;
+  --dk-link: #f0b640;
+  --dk-danger: #f08a80;
+  --dk-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+
+  color-scheme: light;
+  --bg: #f4f1ea;
+  --card: #ffffff;
+  --field: #fbfaf7;
+  --border: #ddd7cb;
+  --text: #26221b;
+  --muted: #6e675c;
+  --accent: #e5a00d;   /* plex amber — the one constant across both themes */
+  --accent-dark: #c98d0b;
+  --on-accent: #231a00;
+  --link: #8a5d00;
+  --danger: #b3261e;
+  --shadow: 0 1px 3px rgba(60, 50, 20, .08);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--dk-bg);
+  --card: var(--dk-card);
+  --field: var(--dk-field);
+  --border: var(--dk-border);
+  --text: var(--dk-text);
+  --muted: var(--dk-muted);
+  --accent-dark: var(--dk-accent-dark);
+  --link: var(--dk-link);
+  --danger: var(--dk-danger);
+  --shadow: var(--dk-shadow);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="auto"] {
+    color-scheme: dark;
+    --bg: var(--dk-bg);
+    --card: var(--dk-card);
+    --field: var(--dk-field);
+    --border: var(--dk-border);
+    --text: var(--dk-text);
+    --muted: var(--dk-muted);
+    --accent-dark: var(--dk-accent-dark);
+    --link: var(--dk-link);
+    --danger: var(--dk-danger);
+    --shadow: var(--dk-shadow);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -18,11 +75,14 @@ body {
   font: 16px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+a { color: var(--link); }
+
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 14px 20px;
+  background: var(--card);
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; }
@@ -32,7 +92,7 @@ header {
   width: 32px; height: 32px;
   border-radius: 7px;
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
   font-size: 15px;
 }
 h1 { font-size: 18px; margin: 0; }
@@ -43,11 +103,12 @@ main { max-width: 640px; margin: 0 auto; padding: 20px 16px 60px; }
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 16px 18px;
   margin-bottom: 16px;
+  box-shadow: var(--shadow);
 }
-h2 { font-size: 15px; margin: 0 0 12px; }
+h2 { font-size: 16px; margin: 0 0 12px; }
 .tag {
   font-size: 11px;
   color: var(--muted);
@@ -58,7 +119,7 @@ h2 { font-size: 15px; margin: 0 0 12px; }
   font-weight: normal;
 }
 
-label { display: block; margin: 10px 0; font-size: 14px; color: var(--muted); }
+label { display: block; margin: 12px 0; font-size: 14px; color: var(--text); }
 .row { display: flex; gap: 12px; }
 .row label { flex: 1; }
 
@@ -69,16 +130,45 @@ input[type=text], input[type=password], input[type=number], input[type=time], se
   padding: 8px 10px;
   border-radius: 7px;
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--field);
   color: var(--text);
   font-size: 15px;
 }
-input:focus, select:focus { outline: none; border-color: var(--accent); }
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(229, 160, 13, .2);
+}
 
-.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.check { display: flex; align-items: center; gap: 8px; }
 .check input { width: 16px; height: 16px; accent-color: var(--accent); }
 
+/* Slider + exact-value box. The number box is sized for three digits so the
+   slider keeps the rest of the row on phones. */
+.slider-row { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.slider-row input[type=range] {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  height: 28px;          /* a comfortable touch target */
+}
+.slider-row .slider-num { width: 4.5em; flex: 0 0 auto; margin-top: 0; text-align: right; }
+.slider-row .unit { color: var(--muted); font-size: 14px; }
+.row label.narrow { flex: 0 0 6.5em; }
+
 .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.hint.warn { color: var(--danger); }
+/* A button that reads as a link — used to dismiss a stale error notice. */
+button.linkish {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--link);
+  font-size: 13px;
+  text-decoration: underline;
+}
 .hint-inline { color: var(--muted); font-size: 12px; }
 
 .actions { display: flex; gap: 12px; margin-top: 20px; }
@@ -90,15 +180,70 @@ button {
   color: var(--text);
   font-size: 15px;
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
-button.primary { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent-dark); color: var(--on-accent); font-weight: 600; }
 button.primary:hover { background: var(--accent-dark); }
-button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+button.danger { color: var(--danger); border-color: var(--danger); background: transparent; box-shadow: none; }
 button:disabled { opacity: .5; cursor: default; }
 
 #now-playing ul { margin: 0; padding: 0; list-style: none; }
 #now-playing li { padding: 4px 0; font-size: 14px; }
 #now-playing .who { color: var(--muted); }
+
+/* ── Settings section menu (iOS-style) ─────────────────────────────────── */
+.menucard { padding: 4px 16px; }
+.menu { list-style: none; margin: 0; padding: 0; }
+.menu li + li { border-top: 1px solid var(--border); }
+.navrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 2px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 16px;
+}
+.navrow .icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 15px;
+}
+.navrow .sub {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.navrow .chev { color: var(--muted); font-size: 20px; line-height: 1; }
+.backlink {
+  display: inline-block;
+  margin: 0 0 10px;
+  color: var(--link);
+  text-decoration: none;
+  font-size: 15px;
+}
+
+/* Read-only key/value rows (network info) */
+.kv { margin: 0; }
+.kv div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.kv div:last-child { border-bottom: none; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; text-align: right; word-break: break-all; }
 
 .stepnum {
   display: inline-grid;
@@ -106,7 +251,7 @@ button:disabled { opacity: .5; cursor: default; }
   width: 22px; height: 22px;
   border-radius: 50%;
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
   font-size: 13px;
   margin-right: 6px;
 }
@@ -119,36 +264,46 @@ button:disabled { opacity: .5; cursor: default; }
   gap: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  background: var(--field);
   padding: 10px 12px;
   margin-bottom: 8px;
   font-size: 14px;
 }
+.picker li > span, .netlist li > span { flex: 1; min-width: 0; }
 .picker li .meta, .netlist li .meta { color: var(--muted); font-size: 12px; }
-.picker li button, .netlist li button { padding: 6px 12px; font-size: 13px; }
-.manual-row { display: flex; gap: 8px; margin-top: 4px; }
+/* Server URLs get their own line: plex.direct hostnames have no break
+   opportunities of their own, and left inline they grew the row until the
+   Use button was pushed off the right edge of the screen. */
+.picker li .meta { display: block; overflow-wrap: anywhere; }
+.picker li button, .netlist li button {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.manual-row { display: flex; gap: 8px; margin-top: 8px; }
 .manual-row input { flex: 1; margin-top: 0; }
 
 .linkcode {
   font: 700 40px/1.1 ui-monospace, Menlo, Consolas, monospace;
   letter-spacing: 14px;
   text-align: center;
-  color: var(--accent);
+  color: var(--accent-dark);
   padding: 10px 0 10px 14px;   /* left pad balances letter-spacing tail */
 }
 
 details { margin-top: 12px; }
-summary { color: var(--muted); font-size: 13px; cursor: pointer; }
+summary { color: var(--link); font-size: 14px; cursor: pointer; }
 
 #toast {
   position: fixed;
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: var(--text);
+  color: var(--card);
   border-radius: 8px;
   padding: 10px 18px;
   font-size: 14px;
-  box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  box-shadow: 0 4px 24px rgba(60, 50, 20, .35);
 }
-#toast.error { border-color: var(--danger); }
+#toast.error { background: var(--danger); }

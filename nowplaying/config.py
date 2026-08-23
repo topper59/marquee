@@ -89,6 +89,9 @@ def defaults() -> dict:
             "url": "",
             "token": "",
             "tv_entity": "",
+            # False dims whenever the TV is on; True (the original behaviour)
+            # additionally requires the sun to be below the horizon.
+            "require_sunset": True,
             "poll_seconds": 60,
         },
         "network": {
@@ -99,11 +102,25 @@ def defaults() -> dict:
             "ap_ssid_prefix": "NowPlaying-Setup",
             "join_timeout_s": 45,
             "boot_connect_timeout_s": 90,
+            # Station-mode addressing. "auto" is DHCP; "manual" pushes the
+            # four fields below onto the saved WiFi profile. NetManager
+            # applies a change and rolls back to DHCP if the device does not
+            # come back — wlan0 is the only link, so a typo must not strand it.
+            "ipv4_method": "auto",
+            "ipv4_address": "",
+            "ipv4_prefix": 24,
+            "ipv4_gateway": "",
+            "ipv4_dns": "",
         },
         "web": {
             "enabled": True,
             "port": 80,
             "password": None,
+            # Appearance of the web UI: "auto" follows the phone or laptop's
+            # own light/dark setting. Stored on the device, not per-browser,
+            # so the panel's pages look the same from anything you open them
+            # on.
+            "theme": "auto",
         },
         "matrix": {
             "rows": 64,
@@ -163,6 +180,41 @@ def _log_level(v):
     return s
 
 
+def _ipv4(v):
+    """Dotted-quad or empty. Deliberately strict: a bad static address on
+    this device's only link is a service call, not a typo."""
+    s = str(v).strip()
+    if not s:
+        return ""
+    parts = s.split(".")
+    if len(parts) != 4:
+        raise ValueError(f"not an IPv4 address: {v!r}")
+    for p in parts:
+        if not p.isdigit() or not (0 <= int(p) <= 255) or (len(p) > 1 and p[0] == "0"):
+            raise ValueError(f"not an IPv4 address: {v!r}")
+    return s
+
+
+def _ipv4_list(v):
+    """Comma- or space-separated IPv4 addresses, normalized to 'a, b'."""
+    raw = str(v).replace(",", " ").split()
+    return ", ".join(_ipv4(a) for a in raw)
+
+
+def _ipv4_method(v):
+    s = str(v).strip().lower()
+    if s not in ("auto", "manual"):
+        raise ValueError(f"unknown IPv4 method: {v!r}")
+    return s
+
+
+def _theme(v):
+    s = str(v).strip().lower()
+    if s not in ("auto", "light", "dark"):
+        raise ValueError(f"unknown theme: {v!r}")
+    return s
+
+
 def _hw_mapping(v):
     s = str(v)
     if s not in ("adafruit-hat-pwm", "adafruit-hat", "regular"):
@@ -192,14 +244,21 @@ _VALIDATORS = {
     "ha.url":                     _url,
     "ha.token":                   str,
     "ha.tv_entity":               str,
+    "ha.require_sunset":          _as_bool,
     "ha.poll_seconds":            _int_range(5, 3600),
     "network.manage":             _as_bool,
     "network.ap_ssid_prefix":     lambda v: str(v).strip()[:24] or "NowPlaying-Setup",
     "network.join_timeout_s":     _int_range(10, 300),
     "network.boot_connect_timeout_s": _int_range(10, 600),
+    "network.ipv4_method":        _ipv4_method,
+    "network.ipv4_address":       _ipv4,
+    "network.ipv4_prefix":        _int_range(1, 32),
+    "network.ipv4_gateway":       _ipv4,
+    "network.ipv4_dns":           _ipv4_list,
     "web.enabled":                _as_bool,
     "web.port":                   _int_range(1, 65535),
     "web.password":               lambda v: None if v in (None, "") else str(v),
+    "web.theme":                  _theme,
     "matrix.rows":                _int_range(8, 256),
     "matrix.cols":                _int_range(8, 512),
     "matrix.hardware_mapping":    _hw_mapping,
@@ -209,6 +268,42 @@ _VALIDATORS = {
     "matrix.limit_refresh_rate_hz": _int_range(0, 1000),
     "log_level":                  _log_level,
 }
+
+def _ipv4_int(addr: str) -> int:
+    a, b, c, d = (int(p) for p in addr.split("."))
+    return (a << 24) | (b << 16) | (c << 8) | d
+
+
+def _same_subnet(addr: str, gateway: str, prefix: int) -> bool:
+    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+    return (_ipv4_int(addr) & mask) == (_ipv4_int(gateway) & mask)
+
+
+def _validate_combined(data: dict, paths: set):
+    """Cross-field rules, checked on the merged document before it is saved.
+
+    Per-path validators cannot see one another, but a static address is only
+    meaningful as a complete set — NetworkManager accepts a half-filled one
+    and only then fails to bring the link up, which on this hardware means
+    the device drops off the network before anyone can be told why.
+
+    Only rules whose inputs the patch actually touches are enforced, so a
+    hand-edited config file cannot make unrelated settings unsavable.
+    """
+    if any(p.startswith("network.ipv4") for p in paths):
+        net = data["network"]
+        if net["ipv4_method"] == "manual":
+            if not net["ipv4_address"]:
+                raise ValueError("a static IP address needs an IP address")
+            if not net["ipv4_gateway"]:
+                raise ValueError("a static IP address needs a router (gateway) address")
+            if not _same_subnet(net["ipv4_address"], net["ipv4_gateway"],
+                                net["ipv4_prefix"]):
+                raise ValueError(
+                    f"the router {net['ipv4_gateway']} is not reachable from "
+                    f"{net['ipv4_address']}/{net['ipv4_prefix']} — check the "
+                    f"address and prefix")
+
 
 # Saving one of these requires a service restart to take effect.
 RESTART_REQUIRED = {"web.enabled", "web.port"} | {
@@ -378,7 +473,9 @@ class Config:
         """Validate and apply {dotted.path: value}. Returns changed paths.
 
         Rejects the whole patch on the first invalid entry — settings are
-        saved all-or-nothing so the UI can show one clear error.
+        saved all-or-nothing so the UI can show one clear error. Fields are
+        checked individually and then as a merged whole, so a combination
+        that is only wrong together (see _validate_combined) never lands.
         """
         normalized = {}
         for path, value in patch.items():
@@ -389,6 +486,14 @@ class Config:
 
         changed = set()
         with self._lock:
+            # Merge into a candidate first: cross-field rules need to see the
+            # patch and the stored settings together, and a rejection must
+            # leave nothing behind.
+            candidate = copy.deepcopy(self._data)
+            for path, value in normalized.items():
+                _set_path(candidate, path, value)
+            _validate_combined(candidate, set(normalized))
+
             for path, value in normalized.items():
                 if _get_path(self._data, path) != value:
                     _set_path(self._data, path, value)

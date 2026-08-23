@@ -60,6 +60,53 @@ ssh root@192.168.2.129 '/opt/plex-matrix/venv/bin/python /opt/plex-matrix/tests/
 The service logs its computed layout on startup (`Layout: title y=...`), which
 is the quickest way to confirm a font or spacing change took effect.
 
+### Factory reset without the button
+
+`nowplaying/factoryreset.py` is the shared implementation (the GPIO hold path
+and the web UI's Device section both call it) and doubles as a CLI. The web
+path is `POST /api/factory-reset` with `{"confirm": true}` (plus optional
+`keep_wifi`); it schedules the same detached `systemd-run` shown below rather
+than wiping inline, so the HTTP reply gets out before the WiFi profile
+disappears.
+
+From SSH, run it detached too, or the `nmcli con delete` kills the session
+mid-command:
+
+```bash
+# Wipe settings, KEEP WiFi — device stays online and SSH survives.
+# This is the one for iterating on the wizard: setup restarts at the Plex step.
+ssh root@192.168.2.129 'systemd-run --collect --unit=np-reset \
+  -p WorkingDirectory=/opt/plex-matrix \
+  /opt/plex-matrix/venv/bin/python -m nowplaying.factoryreset --keep-wifi -y'
+
+# Full reset — also deletes the WiFi profiles. The Pi comes back in AP mode and
+# SSH over the LAN is GONE until it is re-provisioned.
+ssh root@192.168.2.129 'systemd-run --collect --unit=np-reset \
+  -p WorkingDirectory=/opt/plex-matrix \
+  /opt/plex-matrix/venv/bin/python -m nowplaying.factoryreset -y'
+```
+
+`WorkingDirectory` (or `PYTHONPATH=/opt/plex-matrix`) is required — the venv
+does not have the package installed, only on the path. Without `-y` the CLI
+prompts; an unrecognised argument exits 2 without touching anything.
+
+Before ever running the full form, back the profile up so a failed portal run
+is not a stranded device — it survives the reset because it is outside
+NetworkManager's store:
+
+```bash
+cp /etc/NetworkManager/system-connections/nowplaying-wifi.nmconnection \
+   /root/wifi-backup.nmconnection
+# recover (from the setup AP: ssh root@10.42.0.1) with
+cp /root/wifi-backup.nmconnection \
+   /etc/NetworkManager/system-connections/nowplaying-wifi.nmconnection
+chmod 600 /etc/NetworkManager/system-connections/nowplaying-wifi.nmconnection
+nmcli con reload && nmcli con up nowplaying-wifi
+```
+
+sshd listens on 0.0.0.0, so the setup AP (`NowPlaying-Setup-<MAC4>`, open,
+10.42.0.1) is a working out-of-band path when no ethernet is plugged in.
+
 ## Architecture
 
 Package `nowplaying/`, one process, one service. `app.py` builds `Config`,
@@ -69,17 +116,30 @@ then starts threads over one lock-guarded `State`:
   session list, lazily fetches missing posters. Rebuilds its `Plex` client when
   the config's plex section changes.
 - **`ha.py: ha_poller_loop`** — optional Home Assistant integration; sets the
-  single `dim` flag (TV on AND sun below horizon). Idles when disabled.
+  single `dim` flag. The TV being on is always required; `ha.require_sunset`
+  (default true) adds the `sun.sun below_horizon` condition. Idles when
+  disabled.
 - **`netmgr.py: NetManager`** — WiFi provisioning state machine over nmcli
-  (AP mode + captive portal when unprovisioned). Inert while config
-  `network.manage` is false — which it is on this device until signed off.
+  (AP mode + captive portal when unprovisioned). Provisioning is inert while
+  config `network.manage` is false, but static addressing still applies (see
+  below), so the thread runs either way. It is **true** on this device as of 2026-08-22,
+  and `nowplaying-wifi` is the only station profile — so a full factory reset
+  really does cost LAN SSH access.
 - **`resetbtn.py: ResetButton`** — GPIO25 (Bonnet #25 pad): short press = info
   page; 10s hold = factory reset (wipes config + WiFi profiles, restarts into
-  setup). GPIO24 is NOT free — it is the E address line on this panel.
+  setup). GPIO24 is NOT free — it is the E address line on this panel. The
+  wipe itself lives in `factoryreset.py`, shared with the CLI.
 - **`web/server.py`** — Flask on port 80 (werkzeug make_server, daemon
   thread): setup wizard when unprovisioned, settings page otherwise, JSON API
-  under `/api/`. Captive-portal probes redirect in AP mode. Optional password
+  under `/api/`. The settings page treats each section as its own form: Save
+  commits only the visible section and leaving one offers to discard its
+  edits, so a change you can no longer see can never ride along with an
+  unrelated save. Captive-portal probes redirect in AP mode. Optional password
   (sha256, session cookie). Secrets are redacted with a `•••` sentinel.
+  `web.theme` (`auto`/`light`/`dark`) is rendered into `<html data-theme>` by
+  a context processor so the first paint is already right; app.css keeps the
+  dark values in one `--dk-*` block and maps them from both the forced-dark
+  selector and the `prefers-color-scheme` query.
 - **`display/render.py: render_loop`** — main thread, ~20fps, owns all
   drawing. `DisplayMode` status pages (setup/link-code/error/info/reset) are
   dispatched ahead of the schedule gate at ~2fps.
@@ -92,7 +152,11 @@ only when `Config.generation` moves.
 
 `config.py` owns `/var/lib/nowplaying/config.json`: `get()` returns a deep
 snapshot, `update()` takes `{dotted.path: value}`, validates all-or-nothing,
-bumps `generation`, saves atomically. Threads snapshot per loop iteration —
+bumps `generation`, saves atomically. Validation is two-stage: per-path
+normalizers in `_VALIDATORS`, then `_validate_combined()` on a merged
+candidate for rules that span fields (a static address needs an address *and*
+a same-subnet gateway). Combined rules only fire when the patch touches their
+inputs, so a hand-edited file cannot make unrelated settings unsavable. Threads snapshot per loop iteration —
 most settings apply live; `matrix.*` and `web.*` need a restart
 (`RESTART_REQUIRED`), which the UI flags and performs via detached
 `systemd-run`. On first boot with no config.json, `/etc/plex-matrix.env` is
@@ -124,6 +188,20 @@ is up, so the neighborhood is scanned *before* raising the AP and cached for
 the portal. Join failures roll back to AP mode with the error surfaced on
 panel and portal.
 
+**Static addressing** — `network.ipv4_method` (`auto`/`manual`) plus
+`ipv4_address`/`ipv4_prefix`/`ipv4_gateway`/`ipv4_dns` are pushed onto the
+*active* station profile (`nmcli -f GENERAL.CONNECTION dev show wlan0`, so a
+hand-provisioned device works too) with `nmcli con mod` + `con up`. They apply
+only when the values change — the profile already persists them — and after a
+portal join, which rebuilds the profile from scratch. wlan0 is the only link,
+so anything short of a confirmed reconnect reverts the profile to DHCP, brings
+it back up, and rewrites `ipv4_method` to `auto` so the settings page stops
+claiming a static address the device is not using. The failure text lands in
+`netmgr.ipv4_error` → `/api/status`, because the browser was almost certainly
+disconnected at the moment it happened; it therefore outlives the attempt and
+is cleared only explicitly — the Dismiss link, a new addressing save, or a
+successful apply (`POST /api/network/clear-error`).
+
 ### Rendering constraints
 
 - Left 64x64 is poster art; right 64x64 is text. `RX = 64`.
@@ -140,6 +218,14 @@ panel and portal.
 `rgbmatrix` before import, exercises wrap/layout/state/config/migration, and
 drives the `NetManager` state machine with a scripted fake `run_cmd` (no real
 nmcli calls). Add tests there for any new pure logic.
+
+**Settings-page logic** — `tests/web_ui_test.js` runs on the *dev* machine
+(`npm install jsdom && node tests/web_ui_test.js`), building the page from the
+real templates and driving the real `picker.js`/`app.js` with `fetch` and
+`confirm` stubbed. It covers the UI's logic rather than its looks: Save is
+scoped to the visible section, the unsaved-changes guard on navigation, and
+static-IP validation. `node_modules` is gitignored — install jsdom wherever
+you run it.
 
 **Visual preview** — PIL can read the same BDF fonts via `PIL.BdfFontFile`, so
 the panel can be mocked offscreen at 128x64 and scaled up to a PNG (run on the

@@ -13,6 +13,49 @@ function fieldValue(el) {
   return el.type === "checkbox" ? el.checked : el.value;
 }
 
+/* ── Slider ⇄ number pairs ─────────────────────────────────────────────────
+   The range input carries the data-path (so it is the value that gets saved);
+   a companion `data-slider-for` number input mirrors it so a value can also be
+   typed exactly. */
+function syncSliders() {
+  document.querySelectorAll("input[type=range][data-path]").forEach((r) => {
+    const num = document.querySelector(`[data-slider-for="${r.dataset.path}"]`);
+    if (num) num.value = r.value;
+  });
+}
+
+function bindSliders() {
+  document.querySelectorAll("input[type=range][data-path]").forEach((r) => {
+    const num = document.querySelector(`[data-slider-for="${r.dataset.path}"]`);
+    if (!num) return;
+    r.addEventListener("input", () => { num.value = r.value; });
+    const push = () => {
+      const lo = Number(r.min), hi = Number(r.max);
+      let v = Number(num.value);
+      if (!Number.isFinite(v)) return;
+      v = Math.min(hi, Math.max(lo, Math.round(v)));
+      num.value = v;
+      r.value = v;
+    };
+    // input keeps the slider tracking as digits are typed; change clamps once
+    // the field is committed, so a half-typed "1" of "100" is not snapped.
+    num.addEventListener("input", () => { r.value = num.value; });
+    num.addEventListener("change", push);
+  });
+}
+
+/* Fill every [data-path] control from a settings snapshot and remember the
+   loaded value, so save() can send only what actually changed. */
+function applyConfigToFields(cfg) {
+  fields().forEach((el) => {
+    const v = getPath(cfg, el.dataset.path);
+    if (el.type === "checkbox") el.checked = !!v;
+    else el.value = v == null ? "" : v;
+    el.dataset.initial = String(fieldValue(el));
+  });
+  syncSliders();
+}
+
 function toast(msg, isError = false) {
   const t = $("#toast");
   t.textContent = msg;
@@ -84,13 +127,20 @@ async function useCandidate(s, btn) {
 let linkTimer = null;
 
 /* Abandoning the link flow has to tell the device, or the code stays on the
-   panel after the user configures the server some other way. */
+   LED panel after the user gives up on it — for the full PIN lifetime, which
+   is a quarter of an hour of a stale code on a display in someone's room.
+   Every way out routes through here: the Cancel button, configuring the
+   server another way, and leaving the page (see linkOpen callers below). */
+function linkOpen() {
+  const panel = $("#plex-link");
+  return !!panel && !panel.hidden;
+}
+
 async function cancelLink() {
   clearInterval(linkTimer);
   linkTimer = null;
-  const panel = $("#plex-link");
-  if (panel && !panel.hidden) {
-    panel.hidden = true;
+  if (linkOpen()) {
+    $("#plex-link").hidden = true;
     try { await fetch("/api/plex/auth/cancel", { method: "POST" }); } catch {}
   }
 }
@@ -155,10 +205,25 @@ async function pollLink() {
   }
 }
 
+/* Everything the picker puts on screen — the message line, the candidate
+   list, a code panel — is the result of something the user just did in this
+   section. None of it should still be sitting there on a later visit, so
+   leaving the section wipes the lot. */
+async function resetPicker() {
+  await cancelLink();
+  pickerMsg("");
+  const ul = $("#plex-candidates");
+  if (ul) { ul.innerHTML = ""; ul.hidden = true; }
+}
+
 function bindPicker() {
   if (!$("#plex-scan")) return;
   $("#plex-scan").addEventListener("click", plexScan);
   $("#plex-signin").addEventListener("click", () => startLink(null));
+  $("#plex-link-cancel").addEventListener("click", async () => {
+    await cancelLink();
+    pickerMsg("Sign-in cancelled — the code has been taken off the display.");
+  });
   $("#plex-use").addEventListener("click", async () => {
     const url = $("#plex-manual").value.trim();
     if (!url) return;
@@ -177,4 +242,14 @@ function bindPicker() {
   });
 }
 
+/* Closing the tab or reloading kills the poll loop, so a code left on the
+   panel would have nothing watching it. sendBeacon still gets the cancel out
+   during unload, when a normal fetch would be abandoned. */
+window.addEventListener("pagehide", () => {
+  if (linkOpen() && navigator.sendBeacon) {
+    navigator.sendBeacon("/api/plex/auth/cancel");
+  }
+});
+
 bindPicker();
+bindSliders();

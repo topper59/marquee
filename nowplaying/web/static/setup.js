@@ -83,13 +83,7 @@ async function finish() {
 }
 
 async function loadPrefs() {
-  const cfg = await (await fetch("/api/settings")).json();
-  fields().forEach((el) => {
-    const v = getPath(cfg, el.dataset.path);
-    if (el.type === "checkbox") el.checked = !!v;
-    else el.value = v == null ? "" : v;
-    el.dataset.initial = String(fieldValue(el));
-  });
+  applyConfigToFields(await (await fetch("/api/settings")).json());
 }
 
 let prefsLoaded = false;
