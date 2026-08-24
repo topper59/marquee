@@ -6,9 +6,9 @@ import tempfile
 
 from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
 
-from nowplaying import config
+from marquee import config
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 
 def build_matrix(mcfg: dict, brightness: int) -> RGBMatrix:
@@ -58,7 +58,7 @@ def load_pil_title_font():
     _pil_title_tried = True
     try:
         from PIL import ImageFont, BdfFontFile
-        d = tempfile.mkdtemp(prefix="nowplaying-font-")
+        d = tempfile.mkdtemp(prefix="marquee-font-")
         with open(config.FONT_BIG, "rb") as fp:
             BdfFontFile.BdfFontFile(fp).save(os.path.join(d, "title"))
         _pil_title_font = ImageFont.load(os.path.join(d, "title.pil"))

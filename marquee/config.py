@@ -1,7 +1,7 @@
 """Configuration store.
 
 All user-tunable settings live in a JSON document (default
-/var/lib/nowplaying/config.json) owned by the Config class. Threads take a
+/var/lib/marquee/config.json) owned by the Config class. Threads take a
 snapshot with get() each loop iteration; update() validates, merges, bumps
 `generation`, and persists atomically, so changes from the web UI apply
 without a restart for everything except the matrix hardware options.
@@ -20,15 +20,18 @@ import tempfile
 import threading
 from datetime import time as dtime
 
-from nowplaying.plex import filters
+from marquee.plex import filters
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
-CONFIG_PATH = os.environ.get("NOWPLAYING_CONFIG", "/var/lib/nowplaying/config.json")
+CONFIG_PATH = os.environ.get("MARQUEE_CONFIG", "/var/lib/marquee/config.json")
+# Deliberately still the old name: this is a historical path on devices
+# provisioned before config.json existed, so renaming it would break the
+# one thing it is for.
 LEGACY_ENV_PATH = "/etc/plex-matrix.env"
 # Written by a factory reset: its presence stops the legacy env file from
 # resurrecting the old configuration on the next boot.
-NO_MIGRATE_MARKER = "/var/lib/nowplaying/.factory-reset"
+NO_MIGRATE_MARKER = "/var/lib/marquee/.factory-reset"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed visual tuning — deliberately not user configuration
@@ -84,7 +87,7 @@ def defaults() -> dict:
         "version": 1,
         "provisioned": False,
         "device": {
-            "name": "NowPlaying",
+            "name": "Marquee",
             "client_id": "",   # uuid4, generated on first load
         },
         "plex": {
@@ -150,7 +153,7 @@ def defaults() -> dict:
             # WiFi of its own must raise its setup AP unprompted. Devices
             # migrated from the env-file era get False (see migration).
             "manage": True,
-            "ap_ssid_prefix": "NowPlaying-Setup",
+            "ap_ssid_prefix": "Marquee-Setup",
             "join_timeout_s": 45,
             "boot_connect_timeout_s": 90,
             # Station-mode addressing. "auto" is DHCP; "manual" pushes the
@@ -338,7 +341,7 @@ def _hw_mapping(v):
 # Dotted path → normalizer. update() rejects any path not listed here.
 _VALIDATORS = {
     "provisioned":                _as_bool,
-    "device.name":                lambda v: str(v).strip()[:32] or "NowPlaying",
+    "device.name":                lambda v: str(v).strip()[:32] or "Marquee",
     "device.client_id":           str,
     "plex.url":                   _url,
     "plex.token":                 str,
@@ -374,7 +377,7 @@ _VALIDATORS = {
     "ha.require_sunset":          _as_bool,
     "ha.poll_seconds":            _int_range(5, 3600),
     "network.manage":             _as_bool,
-    "network.ap_ssid_prefix":     lambda v: str(v).strip()[:24] or "NowPlaying-Setup",
+    "network.ap_ssid_prefix":     lambda v: str(v).strip()[:24] or "Marquee-Setup",
     "network.join_timeout_s":     _int_range(10, 300),
     "network.boot_connect_timeout_s": _int_range(10, 600),
     "network.ipv4_method":        _ipv4_method,

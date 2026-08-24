@@ -13,7 +13,7 @@ import logging
 import requests
 import urllib3
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 GDM_ADDR = ("239.0.0.250", 32414)
 GDM_MSG = b"M-SEARCH * HTTP/1.1\r\n\r\n"

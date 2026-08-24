@@ -14,9 +14,9 @@ import signal
 import logging
 import threading
 
-from nowplaying.config import Config
+from marquee.config import Config
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 
 def main():
@@ -25,33 +25,33 @@ def main():
     config = Config()
     cfg = config.get()
     logging.getLogger().setLevel(cfg["log_level"])
-    log.info("Starting nowplaying (provisioned=%s, schedule %s→%s)",
+    log.info("Starting Marquee (provisioned=%s, schedule %s→%s)",
              cfg["provisioned"],
              cfg["display"]["schedule_start"], cfg["display"]["schedule_stop"])
 
     # Imported here so config/logging are settled first, and so logic tests can
     # stub out rgbmatrix before anything touches it.
-    from nowplaying.display.state import State
-    from nowplaying.display.matrix import build_matrix
-    from nowplaying.display.render import render_loop
-    from nowplaying.plex.client import fetcher_loop
-    from nowplaying.ha import ha_poller_loop
+    from marquee.display.state import State
+    from marquee.display.matrix import build_matrix
+    from marquee.display.render import render_loop
+    from marquee.plex.client import fetcher_loop
+    from marquee.ha import ha_poller_loop
 
     matrix = build_matrix(cfg["matrix"], cfg["display"]["brightness_normal"])
     state  = State()
     stop   = threading.Event()
 
-    from nowplaying.netmgr import NetManager
+    from marquee.netmgr import NetManager
     netmgr = NetManager(config, state, stop)
     netmgr.start()   # exits immediately unless network.manage is enabled
 
-    from nowplaying.resetbtn import ResetButton
+    from marquee.resetbtn import ResetButton
     ResetButton(config, state, stop, netmgr).start()
 
     web_server = None
     if cfg["web"]["enabled"]:
         try:
-            from nowplaying.web.server import start_web
+            from marquee.web.server import start_web
             web_server = start_web(config, state, netmgr)
         except Exception:
             # The panel must keep working even if the web UI cannot start

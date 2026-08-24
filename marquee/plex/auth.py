@@ -13,20 +13,20 @@ import logging
 
 import requests
 
-import nowplaying
+import marquee
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 PLEX_TV = "https://plex.tv"
 TIMEOUT = 10
-PRODUCT = "NowPlaying Display"
+PRODUCT = "Marquee Display"
 
 
 def _headers(client_id: str, token: str = "") -> dict:
     h = {
         "Accept": "application/json",
         "X-Plex-Product": PRODUCT,
-        "X-Plex-Version": nowplaying.__version__,
+        "X-Plex-Version": marquee.__version__,
         "X-Plex-Client-Identifier": client_id,
         "X-Plex-Device-Name": PRODUCT,
     }

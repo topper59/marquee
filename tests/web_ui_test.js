@@ -10,12 +10,12 @@
  */
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
-const ROOT = __dirname + "/../nowplaying/web/";
+const ROOT = __dirname + "/../marquee/web/";
 const SRC = ROOT + "static/";
 const TPL = ROOT + "templates/";
 
 const CFG = {
-  device: { name: "NowPlaying" }, web: { password: null, theme: "auto" },
+  device: { name: "Marquee" }, web: { password: null, theme: "auto" },
   plex: { url: "http://x", server_name: "S", verify_ssl: false, poll_seconds: 5,
           filter: { users: [], ignore_users: [], players: [], ignore_players: [],
                     media_types: [], hide_paused: false } },
@@ -50,7 +50,7 @@ const page = renderTemplate("base.html").replace(
   "</main>", renderTemplate("settings.html") + "</main>");
 
 const dom = new JSDOM(page, {
-  url: "http://nowplaying.local/", runScripts: "outside-only",
+  url: "http://marquee.local/", runScripts: "outside-only",
 });
 const w = dom.window;
 w.scrollTo = () => {};
@@ -258,7 +258,7 @@ const edit = (path, value) => {
   check("reset is explicitly confirmed", reset.body.confirm === true);
   check("full reset does not keep wifi", reset.body.keep_wifi === false);
   check("page explains what happens next", !$("#restart-note").hidden &&
-        /NowPlaying-Setup/.test($("#restart-note").textContent));
+        /Marquee-Setup/.test($("#restart-note").textContent));
 
   posted = []; confirmed = []; confirmAnswer = true;
   $("#reset-keep-wifi").click(); await settle();
@@ -268,7 +268,7 @@ const edit = (path, value) => {
         !/cannot be undone/i.test(confirmed[0]));
   check("keep-wifi posts the flag", soft.body.keep_wifi === true);
   check("keep-wifi promises the page back",
-        /nowplaying\.local/.test($("#restart-note").textContent));
+        /marquee\.local/.test($("#restart-note").textContent));
 
   check("keep-wifi link does not navigate away", w.location.hash === "#device");
 

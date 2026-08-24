@@ -1,5 +1,5 @@
 [Unit]
-Description=Plex Now Playing LED Matrix Display
+Description=Marquee — Plex now-playing LED matrix display
 # NetworkManager only, NOT network-online: an unprovisioned device has no
 # network to wait for — it must start and bring up its own setup AP.
 After=NetworkManager.service
@@ -8,13 +8,13 @@ After=NetworkManager.service
 Type=simple
 # Must start as root for GPIO; the script calls drop_privileges via librgbmatrix
 User=root
-WorkingDirectory=/opt/plex-matrix
-# Config lives in /var/lib/nowplaying/config.json. The legacy env file at
+WorkingDirectory=/opt/marquee
+# Config lives in /var/lib/marquee/config.json. The legacy env file at
 # /etc/plex-matrix.env is read directly (not via systemd) as a one-time
 # migration source when no config.json exists.
-ExecStart=/opt/plex-matrix/venv/bin/python -m nowplaying
-# Creates /var/lib/nowplaying for config.json
-StateDirectory=nowplaying
+ExecStart=/opt/marquee/venv/bin/python -m marquee
+# Creates /var/lib/marquee for config.json
+StateDirectory=marquee
 Restart=on-failure
 RestartSec=5
 # Pin the process to the isolated core (matches isolcpus=3 in cmdline.txt)

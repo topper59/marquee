@@ -18,12 +18,12 @@ from flask import Flask, jsonify, request, render_template, session
 
 from flask import redirect
 
-import nowplaying
-from nowplaying.config import RESTART_REQUIRED
-from nowplaying.display.state import DisplayMode
-from nowplaying.netmgr import AP_IP, local_ip, wifi_mac
-from nowplaying.plex import auth as plex_auth
-from nowplaying.plex.discovery import gdm_discover, probe_server
+import marquee
+from marquee.config import RESTART_REQUIRED
+from marquee.display.state import DisplayMode
+from marquee.netmgr import AP_IP, local_ip, wifi_mac
+from marquee.plex import auth as plex_auth
+from marquee.plex.discovery import gdm_discover, probe_server
 
 # Paths OSes fetch to detect a captive portal; answering with a redirect to
 # the portal is what pops the sign-in sheet.
@@ -36,10 +36,10 @@ CAPTIVE_PROBES = ("/generate_204", "/gen_204", "/hotspot-detect.html",
 # outlives a code that could still work.
 PIN_PANEL_TTL = 16 * 60
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 # The package is on the path rather than installed in the venv, so a detached
-# `python -m nowplaying.factoryreset` needs to start from the directory that
+# `python -m marquee.factoryreset` needs to start from the directory that
 # contains it (mirrors the WorkingDirectory= in the unit file).
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -106,7 +106,7 @@ def create_app(config, state, netmgr=None) -> Flask:
         cfg = config.get()
         return render_template("login.html", error=error,
                                device_name=cfg["device"]["name"],
-                               version=nowplaying.__version__)
+                               version=marquee.__version__)
 
     @app.post("/api/password")
     def set_password():
@@ -124,7 +124,7 @@ def create_app(config, state, netmgr=None) -> Flask:
         if not in_ap_mode():
             return None
         host = (request.host or "").split(":")[0]
-        if request.path in CAPTIVE_PROBES or host not in (AP_IP, "nowplaying.local"):
+        if request.path in CAPTIVE_PROBES or host not in (AP_IP, "marquee.local"):
             return redirect(f"http://{AP_IP}/", code=302)
         return None
 
@@ -134,7 +134,7 @@ def create_app(config, state, netmgr=None) -> Flask:
         template = "settings.html" if cfg["provisioned"] else "setup.html"
         return render_template(template,
                                device_name=cfg["device"]["name"],
-                               version=nowplaying.__version__)
+                               version=marquee.__version__)
 
     # ── WiFi (provisioning) ───────────────────────────────────────────────
     @app.get("/api/wifi/scan")
@@ -154,7 +154,7 @@ def create_app(config, state, netmgr=None) -> Flask:
         if not ssid:
             return jsonify({"error": "ssid required"}), 400
         netmgr.request_join(ssid, str(body.get("psk", "")))
-        return jsonify({"ok": True, "reconnect_to": "http://nowplaying.local/"})
+        return jsonify({"ok": True, "reconnect_to": "http://marquee.local/"})
 
     @app.get("/api/status")
     def status():
@@ -176,7 +176,7 @@ def create_app(config, state, netmgr=None) -> Flask:
             ssid = netmgr.connected_ssid() if netmgr else ""
         return jsonify({
             "device": cfg["device"]["name"],
-            "version": nowplaying.__version__,
+            "version": marquee.__version__,
             "provisioned": cfg["provisioned"],
             "plex_url": cfg["plex"]["url"],
             "sessions": sessions,
@@ -379,7 +379,7 @@ def create_app(config, state, netmgr=None) -> Flask:
                     keep_wifi)
         state.set_mode(DisplayMode.INFO,
                        lines=["Factory reset", "", "restarting…"])
-        args = [sys.executable, "-m", "nowplaying.factoryreset", "-y"]
+        args = [sys.executable, "-m", "marquee.factoryreset", "-y"]
         if keep_wifi:
             args.append("--keep-wifi")
         subprocess.Popen(
@@ -389,7 +389,7 @@ def create_app(config, state, netmgr=None) -> Flask:
         return jsonify({
             "ok": True,
             "keep_wifi": keep_wifi,
-            "reconnect_to": "http://nowplaying.local/" if keep_wifi else "",
+            "reconnect_to": "http://marquee.local/" if keep_wifi else "",
         })
 
     @app.post("/api/restart")
@@ -397,7 +397,7 @@ def create_app(config, state, netmgr=None) -> Flask:
         # systemd-run detaches the restart from this process, so the HTTP
         # response gets out before the service goes down.
         subprocess.Popen(["systemd-run", "--collect", "--on-active=2",
-                          "systemctl", "restart", "plex-matrix.service"])
+                          "systemctl", "restart", "marquee.service"])
         return jsonify({"ok": True})
 
     return app

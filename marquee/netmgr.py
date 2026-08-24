@@ -26,12 +26,12 @@ import subprocess
 import threading
 import time
 
-from nowplaying.display.state import State, DisplayMode
+from marquee.display.state import State, DisplayMode
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
-AP_CON = "nowplaying-ap"
-STATION_CON = "nowplaying-wifi"
+AP_CON = "marquee-ap"
+STATION_CON = "marquee-wifi"
 AP_IP = "10.42.0.1"
 WIFI_DEV = "wlan0"
 

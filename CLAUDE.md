@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A now-playing display for a 128x64 HUB75 LED matrix, driven by a Raspberry Pi 4B
+**Marquee** — a now-playing display for a 128x64 HUB75 LED matrix, driven by a Raspberry Pi 4B
 mounted on an Adafruit RGB Matrix Bonnet. It polls Plex for active sessions and
 renders poster art, title, season/episode code, user, time remaining, and a
 progress bar. It is being productized: an unconfigured device boots into an
 open WiFi AP with a captive-portal setup wizard, and a settings web UI stays
-available afterwards at http://nowplaying.local.
+available afterwards at http://marquee.local.
 
 **This code cannot run or be meaningfully tested on the dev machine.** It imports
 `rgbmatrix`, needs the BDF fonts at `/opt/rpi-rgb-led-matrix/fonts`, and talks to
@@ -21,11 +21,11 @@ over SSH.
 
 | | |
 |---|---|
-| Host | `ssh root@192.168.2.129` (hostname `nowplaying`) |
-| Service | `plex-matrix.service` (systemd, enabled) |
-| App dir | `/opt/plex-matrix/` — `nowplaying/` package, `tests/`, venv |
-| Interpreter | `/opt/plex-matrix/venv/bin/python` (3.13), runs `-m nowplaying` |
-| Config | `/var/lib/nowplaying/config.json`, mode 600 |
+| Host | `ssh root@192.168.2.129` (hostname `marquee`) |
+| Service | `marquee.service` (systemd, enabled) |
+| App dir | `/opt/marquee/` — `marquee/` package, `tests/`, venv |
+| Interpreter | `/opt/marquee/venv/bin/python` (3.13), runs `-m marquee` |
+| Config | `/var/lib/marquee/config.json`, mode 600 |
 | OS | Debian 13 (trixie), NetworkManager 1.52 |
 
 The Pi is on WiFi and the first SSH after idle often fails with "no route to
@@ -43,6 +43,42 @@ station mode.
 `pi/etc/` holds local copies of the unit file, the captive dnsmasq conf, and
 the legacy env file; the env copy is gitignored because it carries real tokens.
 
+### Hostname
+
+`marquee.local` comes from avahi following the system hostname, and the
+hostname is pinned in the **cloud-init seed** at `/boot/firmware/user-data`:
+
+```yaml
+hostname: marquee
+fqdn: marquee
+prefer_fqdn_over_hostname: false
+```
+
+`hostnamectl set-hostname` alone does not hold. cloud-init re-runs
+`update_hostname`/`update_etc_hosts` every boot, and the merge order puts the
+datasource's user-data **above** anything in `/etc/cloud/cloud.cfg.d/`, so a
+`preserve_hostname: true` drop-in there loses. Worse, its cached datasource
+(`/var/lib/cloud/instance/obj.pkl`, a pickle that text greps skip) keeps
+serving the old name until it is deleted — and with the pickle gone but no
+explicit `fqdn:`, cloud-init falls back to reverse DNS, which handed back
+`nowplaying` from the router and set the hostname straight back. Pinning both
+`hostname` and `fqdn` in the seed short-circuits every fallback. Changing the
+device's name again means editing that file and deleting `obj.pkl`.
+
+### The name
+
+The product is **Marquee**. It was called `plex-matrix` (unit, `/opt`) and
+`nowplaying` (package, state dir, hostname, AP SSID) at different times; both
+were renamed on 2026-08-24 — service, app dir, package, `/var/lib`, hostname,
+mDNS name, and the `marquee-wifi` / `marquee-ap` nmcli profiles all say
+`marquee` now. Loggers use `getLogger(__name__)` rather than a hardcoded
+string, so a future rename cannot leave one behind.
+
+**`/etc/plex-matrix.env` is the one deliberate survivor.** It is a historical
+path that exists on devices provisioned before config.json did; renaming it
+would break the one-time migration that is its entire purpose. `config.py`
+says so at the constant. Everything else that says `plex-matrix` is a bug.
+
 ## Commands
 
 ```bash
@@ -53,8 +89,8 @@ the legacy env file; the env copy is gitignored because it carries real tokens.
 ```
 
 ```bash
-ssh root@192.168.2.129 'journalctl -u plex-matrix.service -f'
-ssh root@192.168.2.129 '/opt/plex-matrix/venv/bin/python /opt/plex-matrix/tests/on_pi_smoke.py'
+ssh root@192.168.2.129 'journalctl -u marquee.service -f'
+ssh root@192.168.2.129 '/opt/marquee/venv/bin/python /opt/marquee/tests/on_pi_smoke.py'
 ```
 
 The service logs its computed layout on startup (`Layout: title y=...`), which
@@ -62,7 +98,7 @@ is the quickest way to confirm a font or spacing change took effect.
 
 ### Factory reset without the button
 
-`nowplaying/factoryreset.py` is the shared implementation (the GPIO hold path
+`marquee/factoryreset.py` is the shared implementation (the GPIO hold path
 and the web UI's Device section both call it) and doubles as a CLI. The web
 path is `POST /api/factory-reset` with `{"confirm": true}` (plus optional
 `keep_wifi`); it schedules the same detached `systemd-run` shown below rather
@@ -76,17 +112,17 @@ mid-command:
 # Wipe settings, KEEP WiFi — device stays online and SSH survives.
 # This is the one for iterating on the wizard: setup restarts at the Plex step.
 ssh root@192.168.2.129 'systemd-run --collect --unit=np-reset \
-  -p WorkingDirectory=/opt/plex-matrix \
-  /opt/plex-matrix/venv/bin/python -m nowplaying.factoryreset --keep-wifi -y'
+  -p WorkingDirectory=/opt/marquee \
+  /opt/marquee/venv/bin/python -m marquee.factoryreset --keep-wifi -y'
 
 # Full reset — also deletes the WiFi profiles. The Pi comes back in AP mode and
 # SSH over the LAN is GONE until it is re-provisioned.
 ssh root@192.168.2.129 'systemd-run --collect --unit=np-reset \
-  -p WorkingDirectory=/opt/plex-matrix \
-  /opt/plex-matrix/venv/bin/python -m nowplaying.factoryreset -y'
+  -p WorkingDirectory=/opt/marquee \
+  /opt/marquee/venv/bin/python -m marquee.factoryreset -y'
 ```
 
-`WorkingDirectory` (or `PYTHONPATH=/opt/plex-matrix`) is required — the venv
+`WorkingDirectory` (or `PYTHONPATH=/opt/marquee`) is required — the venv
 does not have the package installed, only on the path. Without `-y` the CLI
 prompts; an unrecognised argument exits 2 without touching anything.
 
@@ -101,15 +137,22 @@ cp /etc/NetworkManager/system-connections/nowplaying-wifi.nmconnection \
 cp /root/wifi-backup.nmconnection \
    /etc/NetworkManager/system-connections/nowplaying-wifi.nmconnection
 chmod 600 /etc/NetworkManager/system-connections/nowplaying-wifi.nmconnection
-nmcli con reload && nmcli con up nowplaying-wifi
+nmcli con reload && nmcli con up marquee-wifi
 ```
 
-sshd listens on 0.0.0.0, so the setup AP (`NowPlaying-Setup-<MAC4>`, open,
+**The profile *files* are still `nowplaying-*.nmconnection`.** `nmcli con mod
+… connection.id` renames the connection, not the file backing it, and nothing
+keys on the filename — NM matches on the id inside, so `nmcli con up
+marquee-wifi` and `nmcli con delete marquee-wifi` both work. Renaming the
+files means moving them out from under NM's inotify watch on the Pi's only
+link; not worth it for cosmetics.
+
+sshd listens on 0.0.0.0, so the setup AP (`Marquee-Setup-<MAC4>`, open,
 10.42.0.1) is a working out-of-band path when no ethernet is plugged in.
 
 ## Architecture
 
-Package `nowplaying/`, one process, one service. `app.py` builds `Config`,
+Package `marquee/`, one process, one service. `app.py` builds `Config`,
 then starts threads over one lock-guarded `State`:
 
 - **`plex/client.py: fetcher_loop`** — polls `/status/sessions`, applies the
@@ -134,7 +177,7 @@ then starts threads over one lock-guarded `State`:
   (AP mode + captive portal when unprovisioned). Provisioning is inert while
   config `network.manage` is false, but static addressing still applies (see
   below), so the thread runs either way. It is **true** on this device as of 2026-08-22,
-  and `nowplaying-wifi` is the only station profile — so a full factory reset
+  and `marquee-wifi` is the only station profile — so a full factory reset
   really does cost LAN SSH access.
 - **`resetbtn.py: ResetButton`** — GPIO25 (Bonnet #25 pad): short press = info
   page; 10s hold = factory reset (wipes config + WiFi profiles, restarts into
@@ -161,7 +204,7 @@ only when `Config.generation` moves.
 
 ### Config
 
-`config.py` owns `/var/lib/nowplaying/config.json`: `get()` returns a deep
+`config.py` owns `/var/lib/marquee/config.json`: `get()` returns a deep
 snapshot, `update()` takes `{dotted.path: value}` (nested subsections like
 `plex.filter.users` included), validates all-or-nothing,
 bumps `generation`, saves atomically. Validation is two-stage: per-path
@@ -197,7 +240,7 @@ constants in config.py — edit and redeploy.
 
 ### Provisioning (netmgr)
 
-AP = nmcli profile `nowplaying-ap`, `ipv4.method shared` (NM spawns dnsmasq),
+AP = nmcli profile `marquee-ap`, `ipv4.method shared` (NM spawns dnsmasq),
 10.42.0.1/24. Captive DNS wildcard lives in
 `/etc/NetworkManager/dnsmasq-shared.d/captive.conf` — only loaded for shared
 connections, inert in station mode. brcmfmac usually cannot scan while the AP

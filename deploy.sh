@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push the nowplaying package to the Pi and restart the service.
+# Push the marquee package to the Pi and restart the service.
 #   ./deploy.sh          push + restart + tail logs
 #   ./deploy.sh --unit   also push the systemd unit (daemon-reload)
 #   ./deploy.sh --env    also push /etc/plex-matrix.env
@@ -20,17 +20,17 @@ for a in "$@"; do
 done
 
 echo "→ syntax check"
-python3 -m compileall -q nowplaying tests
+python3 -m compileall -q marquee tests
 
 echo "→ pushing package"
 rsync -a --delete --exclude '__pycache__' -e "ssh -o ConnectTimeout=25" \
-  nowplaying/ "$PI":/opt/plex-matrix/nowplaying/
+  marquee/ "$PI":/opt/marquee/marquee/
 rsync -a --exclude '__pycache__' -e "ssh -o ConnectTimeout=25" \
-  tests requirements.txt "$PI":/opt/plex-matrix/
+  tests requirements.txt "$PI":/opt/marquee/
 
 if [ "$push_deps" = 1 ]; then
   echo "→ installing deps"
-  $SSH "$PI" '/opt/plex-matrix/venv/bin/pip install -q -r /opt/plex-matrix/requirements.txt'
+  $SSH "$PI" '/opt/marquee/venv/bin/pip install -q -r /opt/marquee/requirements.txt'
 fi
 
 if [ "$push_env" = 1 ]; then
@@ -41,14 +41,14 @@ fi
 
 if [ "$push_unit" = 1 ]; then
   echo "→ pushing unit + captive dnsmasq conf"
-  scp -o ConnectTimeout=25 pi/etc/plex-matrix.service "$PI":/etc/systemd/system/plex-matrix.service
+  scp -o ConnectTimeout=25 pi/etc/marquee.service "$PI":/etc/systemd/system/marquee.service
   $SSH "$PI" 'mkdir -p /etc/NetworkManager/dnsmasq-shared.d'
   scp -o ConnectTimeout=25 pi/etc/captive-dnsmasq.conf "$PI":/etc/NetworkManager/dnsmasq-shared.d/captive.conf
   $SSH "$PI" 'systemctl daemon-reload'
 fi
 
 echo "→ restarting"
-$SSH "$PI" 'systemctl restart plex-matrix.service && sleep 2 && systemctl is-active plex-matrix.service'
+$SSH "$PI" 'systemctl restart marquee.service && sleep 2 && systemctl is-active marquee.service'
 
 echo "→ recent logs"
-$SSH "$PI" 'journalctl -u plex-matrix.service -n 20 --no-pager'
+$SSH "$PI" 'journalctl -u marquee.service -n 20 --no-pager'

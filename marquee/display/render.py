@@ -9,15 +9,15 @@ from datetime import datetime, time as dtime
 from PIL import Image, ImageDraw, ImageOps
 from rgbmatrix import RGBMatrix, graphics
 
-from nowplaying import config
-from nowplaying.netmgr import local_ip
-from nowplaying.display.state import State, DisplayMode
-from nowplaying.display.matrix import (
+from marquee import config
+from marquee.netmgr import local_ip
+from marquee.display.state import State, DisplayMode
+from marquee.display.matrix import (
     load_fonts, load_pil_title_font, text_width, compute_text_layout,
     wrap_two_lines, format_remaining,
 )
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 # One half is poster art, the other is text. `display.poster_side` swaps
 # them; RX is the default text origin (poster left) and the fallback for
@@ -179,7 +179,7 @@ def make_title_phases(text: str, pil_font, height: int,
 
 
 def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.Event):
-    from nowplaying.config import parse_hhmm
+    from marquee.config import parse_hhmm
 
     _font_big, _font_sm, _font_sub, _font_clk = load_fonts()
     # None on any font it cannot compile; the scroll branch falls back to

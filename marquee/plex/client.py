@@ -9,11 +9,11 @@ import requests
 import urllib3
 from PIL import Image
 
-from nowplaying import config
-from nowplaying.plex.filters import apply_filter
-from nowplaying.display.state import Session, State
+from marquee import config
+from marquee.plex.filters import apply_filter
+from marquee.display.state import Session, State
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

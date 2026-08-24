@@ -11,9 +11,9 @@ from typing import Optional
 
 import requests
 
-from nowplaying.display.state import State
+from marquee.display.state import State
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 
 class HomeAssistant:

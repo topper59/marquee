@@ -1,4 +1,4 @@
-# Runtime deps for the Pi venv (/opt/plex-matrix/venv). rgbmatrix is built from
+# Runtime deps for the Pi venv (/opt/marquee/venv). rgbmatrix is built from
 # source on the Pi (rpi-rgb-led-matrix) and is deliberately not listed here.
 requests>=2.32
 Pillow>=11

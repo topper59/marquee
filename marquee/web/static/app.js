@@ -310,11 +310,11 @@ async function save() {
     const addr = patch["network.ipv4_address"]
       || document.querySelector('[data-path="network.ipv4_address"]').value;
     const where = patch["network.ipv4_method"] === "manual" && addr
-      ? `http://${addr}/` : "http://nowplaying.local/";
+      ? `http://${addr}/` : "http://marquee.local/";
     $("#restart-note").hidden = false;
     $("#restart-note").textContent =
       `Reconnecting the display's WiFi — this page will go quiet for a few ` +
-      `seconds. Reopen it at ${where} (or http://nowplaying.local/). If the ` +
+      `seconds. Reopen it at ${where} (or http://marquee.local/). If the ` +
       `address does not work, the display returns to automatic addressing.`;
     toast("Saved — changing the display's IP address");
   } else if (out.restart_required.length) {
@@ -342,12 +342,12 @@ async function factoryReset(keepWifi) {
     ? "Erase all settings and restart into setup?\n\n" +
       "The Plex server, display settings and password will be erased. The " +
       "display stays on this WiFi, so this page will come back at " +
-      "http://nowplaying.local/ in about a minute."
+      "http://marquee.local/ in about a minute."
     : "Factory reset the display?\n\n" +
       "This erases the Plex server, all display settings, the password AND " +
       "the saved WiFi network.\n\n" +
       "The display will leave your network and start its own " +
-      "NowPlaying-Setup WiFi, so this page will stop working and you will " +
+      "Marquee-Setup WiFi, so this page will stop working and you will " +
       "need a phone or laptop to set it up again.\n\n" +
       "This cannot be undone.";
   if (!confirm(question)) return;
@@ -367,9 +367,9 @@ async function factoryReset(keepWifi) {
   $("#restart-note").hidden = false;
   $("#restart-note").textContent = keepWifi
     ? "Erasing settings and restarting… this page will come back at " +
-      "http://nowplaying.local/ in about a minute."
+      "http://marquee.local/ in about a minute."
     : "Erasing everything… the display is leaving your WiFi and will start " +
-      "its own NowPlaying-Setup network. Join that network from a phone or " +
+      "its own Marquee-Setup network. Join that network from a phone or " +
       "laptop to set it up again.";
   toast("Factory reset started");
 }

@@ -1,6 +1,6 @@
 /* First-run wizard. Depends on picker.js. The visible step is derived from
    device state on every poll, so the flow survives the WiFi handoff (phone
-   drops off the setup AP, rejoins home WiFi, reopens nowplaying.local). */
+   drops off the setup AP, rejoins home WiFi, reopens marquee.local). */
 "use strict";
 
 let chosenSsid = null;

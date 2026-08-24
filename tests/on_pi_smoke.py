@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Logic smoke tests, run on the Pi (needs PIL, not the panel):
 
-    /opt/plex-matrix/venv/bin/python /opt/plex-matrix/tests/on_pi_smoke.py
+    /opt/marquee/venv/bin/python /opt/marquee/tests/on_pi_smoke.py
 
 Stubs out rgbmatrix before loading the package so the pure logic is exercised
 without touching the hardware.
@@ -24,19 +24,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import threading  # noqa: E402
 
-import nowplaying.config as cfgmod  # noqa: E402
-from nowplaying.config import (  # noqa: E402
+import marquee.config as cfgmod  # noqa: E402
+from marquee.config import (  # noqa: E402
     Config, parse_hhmm, hex_to_rgb, scale_rgb,
 )
-from nowplaying.display.render import (  # noqa: E402
+from marquee.display.render import (  # noqa: E402
     is_within_schedule, is_within_dim_window,
 )
-from nowplaying.display.matrix import (  # noqa: E402
+from marquee.display.matrix import (  # noqa: E402
     wrap_two_lines, format_remaining, compute_text_layout,
 )
-from nowplaying.display.state import Session, State  # noqa: E402
-from nowplaying.plex import filters  # noqa: E402
-import nowplaying.plex.client as plexclient  # noqa: E402
+from marquee.display.state import Session, State  # noqa: E402
+from marquee.plex import filters  # noqa: E402
+import marquee.plex.client as plexclient  # noqa: E402
 
 failures = 0
 
@@ -263,8 +263,8 @@ with tempfile.TemporaryDirectory() as td:
     check("corrupt file preserved", os.path.exists(bad + ".corrupt"))
 
 print("factory reset")
-from nowplaying import factoryreset  # noqa: E402
-from nowplaying.netmgr import STATION_CON  # noqa: E402
+from marquee import factoryreset  # noqa: E402
+from marquee.netmgr import STATION_CON  # noqa: E402
 
 with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
@@ -272,7 +272,7 @@ with tempfile.TemporaryDirectory() as td:
 
     # Neither nmcli nor systemd-run may actually run from a test, and the
     # default config path must be redirected — main() with no argument would
-    # otherwise wipe this Pi's real /var/lib/nowplaying/config.json.
+    # otherwise wipe this Pi's real /var/lib/marquee/config.json.
     ran = []
     cpath = os.path.join(td, "wipe.json")
     real_run, real_popen = factoryreset.subprocess.run, factoryreset.subprocess.Popen
@@ -324,8 +324,8 @@ with tempfile.TemporaryDirectory() as td:
 
 print("NetManager")
 import threading
-from nowplaying.netmgr import NetManager, AP_CON, STATION_CON
-from nowplaying.display.state import DisplayMode
+from marquee.netmgr import NetManager, AP_CON, STATION_CON
+from marquee.display.state import DisplayMode
 
 
 class FakeNM:
@@ -343,7 +343,7 @@ class FakeNM:
         self.calls.append(" ".join(args))
         j = self.calls[-1]
         if "dev wifi list" in j:
-            return 0, "My\\: Net:78:WPA2\nOther:45:\nMy\\: Net:12:WPA2\nNowPlaying-Setup-AB12:99:\n"
+            return 0, "My\\: Net:78:WPA2\nOther:45:\nMy\\: Net:12:WPA2\nMarquee-Setup-AB12:99:\n"
         if "NAME,TYPE con show" in j:
             return 0, "".join(f"{n}:802-11-wireless\n" for n in self.profiles)
         if "con add" in j:
@@ -394,7 +394,7 @@ with tempfile.TemporaryDirectory() as td:
     nets = nm.wifi_scan()
     check("scan parses escaped colon ssid", nets[0]["ssid"] == "My: Net")
     check("scan dedupes to strongest", nets[0]["signal"] == 78)
-    check("scan hides own setup AP", all(not n["ssid"].startswith("NowPlaying-Setup")
+    check("scan hides own setup AP", all(not n["ssid"].startswith("Marquee-Setup")
                                          for n in nets))
     check("scan marks security", nets[0]["secured"] and not nets[1]["secured"])
     check("no station profiles yet", nm.station_profile_names() == [])
@@ -412,7 +412,7 @@ with tempfile.TemporaryDirectory() as td:
     check("AP profile created", AP_CON in fake.profiles)
     mode, payload = nstate.get_mode()
     check("panel shows setup screen", mode is DisplayMode.SETUP and
-          payload["ssid"].startswith("NowPlaying-Setup-"))
+          payload["ssid"].startswith("Marquee-Setup-"))
 
     fake.fail_join = True
     nm.request_join("My: Net", "wrongpass")
@@ -516,7 +516,7 @@ with tempfile.TemporaryDirectory() as td:
     check("error can be dismissed", inm.ipv4_error == "")
 
 print("HA dim rule")
-from nowplaying.ha import HomeAssistant  # noqa: E402
+from marquee.ha import HomeAssistant  # noqa: E402
 
 
 class FakeHA(HomeAssistant):
@@ -549,7 +549,7 @@ print("web link flow")
 with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
     cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
-    import nowplaying.web.server as websrv
+    import marquee.web.server as websrv
 
     # Stub the network calls: this exercises our state handling, not plex.tv.
     websrv.probe_server = lambda url, token="", timeout=4: {
@@ -593,7 +593,7 @@ print("plex sign-in cancel")
 with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
     cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
-    import nowplaying.web.server as websrv
+    import marquee.web.server as websrv
 
     websrv.plex_auth = types.SimpleNamespace(
         pin_create=lambda cid: {"id": 7, "code": "ABCD"},
@@ -629,7 +629,7 @@ print("theme")
 with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
     cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
-    import nowplaying.web.server as websrv
+    import marquee.web.server as websrv
 
     tc = Config(os.path.join(td, "theme.json"))
     check("defaults to following the viewer's device",
@@ -657,7 +657,7 @@ print("web factory reset")
 with tempfile.TemporaryDirectory() as td:
     cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
     cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
-    import nowplaying.web.server as websrv
+    import marquee.web.server as websrv
 
     # systemd-run must not actually fire from a test — this Pi would wipe
     # itself. Capture the argv instead and check what would have run.
@@ -680,7 +680,7 @@ with tempfile.TemporaryDirectory() as td:
         check("reset runs detached", spawned and spawned[0][0] == "systemd-run")
         argv = " ".join(spawned[0])
         check("reset runs the shared implementation",
-              "nowplaying.factoryreset" in argv and " -y" in argv)
+              "marquee.factoryreset" in argv and " -y" in argv)
         check("full reset does not keep wifi", "--keep-wifi" not in argv)
         check("reset starts in the package directory",
               f"WorkingDirectory={websrv.PACKAGE_ROOT}" in argv)
@@ -695,7 +695,7 @@ with tempfile.TemporaryDirectory() as td:
               r.status_code == 200 and r.get_json()["keep_wifi"] is True)
         check("keep-wifi passes the flag", "--keep-wifi" in " ".join(spawned[0]))
         check("keep-wifi tells the browser where to come back",
-              "nowplaying.local" in r.get_json()["reconnect_to"])
+              "marquee.local" in r.get_json()["reconnect_to"])
 
         # The wipe itself must still be gated behind the password.
         rc.update({"web.password": "0" * 64})
@@ -951,8 +951,8 @@ with tempfile.TemporaryDirectory() as d:
 
 print("sub-pixel title scrolling")
 # Needs the real BDF fonts, which is why this lives in the on-Pi suite.
-from nowplaying.display.matrix import load_pil_title_font  # noqa: E402
-from nowplaying.display.render import make_title_phases    # noqa: E402
+from marquee.display.matrix import load_pil_title_font  # noqa: E402
+from marquee.display.render import make_title_phases    # noqa: E402
 
 _pf = load_pil_title_font()
 check("the title font compiles for PIL", _pf is not None)

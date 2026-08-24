@@ -10,11 +10,11 @@ and restarts the service into the setup wizard.
 Command line (on the Pi; the package lives on the path, not installed in the
 venv, so it needs the working directory or PYTHONPATH):
 
-    cd /opt/plex-matrix
-    venv/bin/python -m nowplaying.factoryreset --keep-wifi -y
-    venv/bin/python -m nowplaying.factoryreset -y
+    cd /opt/marquee
+    venv/bin/python -m marquee.factoryreset --keep-wifi -y
+    venv/bin/python -m marquee.factoryreset -y
 
-Run it detached (`systemd-run --collect -p WorkingDirectory=/opt/plex-matrix
+Run it detached (`systemd-run --collect -p WorkingDirectory=/opt/marquee
 …`) when invoking over SSH without --keep-wifi: deleting the station profile
 drops the connection, which would otherwise kill the reset partway through.
 
@@ -31,10 +31,10 @@ import subprocess
 import sys
 import time
 
-from nowplaying import config as cfgmod
-from nowplaying.netmgr import AP_CON, STATION_CON
+from marquee import config as cfgmod
+from marquee.netmgr import AP_CON, STATION_CON
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 
 def reset(config_path: str = None, keep_wifi: bool = False,
@@ -67,7 +67,7 @@ def reset(config_path: str = None, keep_wifi: bool = False,
         # Detached so the caller (web request, SSH session, button thread)
         # is not killed along with the service.
         subprocess.Popen(["systemd-run", "--collect", "--on-active=2",
-                          "systemctl", "restart", "plex-matrix.service"])
+                          "systemctl", "restart", "marquee.service"])
         log.info("Service restart scheduled")
 
 

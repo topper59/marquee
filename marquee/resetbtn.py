@@ -19,11 +19,11 @@ import logging
 import threading
 import time
 
-import nowplaying
-from nowplaying import factoryreset
-from nowplaying.display.state import State, DisplayMode
+import marquee
+from marquee import factoryreset
+from marquee.display.state import State, DisplayMode
 
-log = logging.getLogger("plex-matrix")
+log = logging.getLogger(__name__)
 
 BUTTON_GPIO = 25
 INFO_HOLD_MAX = 3.0    # released before this → info page
@@ -47,8 +47,8 @@ class ResetButton(threading.Thread):
         lines = [
             cfg["device"]["name"],
             ip or "no network",
-            "nowplaying.local",
-            f"v{nowplaying.__version__}",
+            "marquee.local",
+            f"v{marquee.__version__}",
         ]
         self.state.set_mode(DisplayMode.INFO, lines=lines)
 
