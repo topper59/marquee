@@ -1,8 +1,14 @@
 """Matrix construction, fonts, and text-measurement/layout helpers."""
 
+import os
+import logging
+import tempfile
+
 from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
 
 from nowplaying import config
+
+log = logging.getLogger("plex-matrix")
 
 
 def build_matrix(mcfg: dict, brightness: int) -> RGBMatrix:
@@ -26,6 +32,42 @@ def build_matrix(mcfg: dict, brightness: int) -> RGBMatrix:
     opts.show_refresh_rate = False
     opts.scan_mode = 0
     return RGBMatrix(options=opts)
+
+
+_pil_title_font = None
+_pil_title_tried = False
+
+
+def load_pil_title_font():
+    """The title font again, compiled for PIL. None if that is not possible.
+
+    PIL reads the same BDF the panel library does, and the two agree on width
+    to the pixel — checked on the Pi across proportional strings, so the
+    scroll bounds computed from `text_width` stay valid for a PIL-rendered
+    strip. What PIL adds is supersampling and box filtering, which is the only
+    way to put a glyph edge between two panel columns; `graphics.DrawText`
+    lands on whole pixels only.
+
+    Compiled once into a temp dir because `ImageFont.load` wants a file. A
+    failure here is not fatal — the caller falls back to DrawText and the
+    title scrolls in whole pixels, exactly as it used to.
+    """
+    global _pil_title_font, _pil_title_tried
+    if _pil_title_tried:
+        return _pil_title_font
+    _pil_title_tried = True
+    try:
+        from PIL import ImageFont, BdfFontFile
+        d = tempfile.mkdtemp(prefix="nowplaying-font-")
+        with open(config.FONT_BIG, "rb") as fp:
+            BdfFontFile.BdfFontFile(fp).save(os.path.join(d, "title"))
+        _pil_title_font = ImageFont.load(os.path.join(d, "title.pil"))
+        log.info("Sub-pixel title scrolling enabled (%s)", config.FONT_BIG)
+    except Exception as exc:
+        log.warning("No PIL build of %s (%s) — titles will scroll in whole "
+                    "pixels", config.FONT_BIG, exc)
+        _pil_title_font = None
+    return _pil_title_font
 
 
 def load_fonts():

@@ -42,6 +42,10 @@ class Session:
     poster: Optional[Image.Image] = field(default=None, repr=False)
     # Lazily built from `poster` the first time this session is seen paused.
     poster_paused: Optional[Image.Image] = field(default=None, repr=False)
+    # Lazily built the first time a too-wide title has to scroll: the same
+    # string pre-rendered at each horizontal sub-pixel phase. See
+    # render.make_title_phases.
+    title_phases: Optional[list] = field(default=None, repr=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +106,11 @@ class State:
                 if old is not None and old.thumb_path == ns.thumb_path:
                     ns.poster        = old.poster
                     ns.poster_paused = old.poster_paused
+                # The title strip is keyed on the title, not the artwork —
+                # they change independently, and rebuilding it every poll
+                # would throw away the cache the render loop depends on.
+                if old is not None and old.title == ns.title:
+                    ns.title_phases = old.title_phases
             # Going empty is the moment to remember what was on — after this
             # the session it came from is gone.
             if not new_sessions and self.sessions:

@@ -33,8 +33,24 @@ NO_MIGRATE_MARKER = "/var/lib/nowplaying/.factory-reset"
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed visual tuning — deliberately not user configuration
 # ─────────────────────────────────────────────────────────────────────────────
-SCROLL_PX_PER_FRAME = 1
-SCROLL_FRAME_MS     = 50
+# Scroll speed in **pixels per second**, keyed by `display.scroll_speed`.
+# Per-second rather than per-frame so the frame rate below can change without
+# silently retuning every speed; the render loop converts once per settings
+# change, not once per frame.
+SCROLL_SPEEDS       = {"slow": 10.0, "normal": 20.0, "fast": 40.0}
+# The panel refreshes at ~120Hz (measured on the Pi: SwapOnVSync blocks a
+# steady 8.33ms), so feeding it 20fps threw away five sixths of the positions
+# a moving title could have occupied. 60fps lands on every second panel
+# refresh and costs about 1.5% of a core — drawing a frame is 0.26ms. The
+# float accumulator in the render loop is what lets the resulting sub-pixel
+# step actually move instead of rounding to zero.
+SCROLL_FRAME_MS     = 1000 / 60
+# Horizontal sub-pixel resolution for the scrolling title. The panel can only
+# light whole pixels, but it can light them *partially*, so a glyph edge
+# landing between two columns is drawn across both in proportion. 4 phases is
+# where the improvement stops being visible on a 7px-wide font; each one costs
+# a cached image per title, built in about a millisecond.
+SCROLL_SUBPIXEL     = 4
 SCROLL_PAUSE_MS     = 1500
 IDLE_DIM            = (40, 40, 80)
 PROGRESS_BG         = (30, 30, 30)
@@ -42,9 +58,6 @@ PROGRESS_BG         = (30, 30, 30)
 # there is one colour to change rather than three to keep in step. The time
 # remaining sits a little behind the bar.
 REMAIN_SCALE        = 0.75
-# How far the held artwork is knocked back in the "poster" idle mode. It can
-# sit there for hours, so it is deliberately well under full brightness.
-IDLE_POSTER_DIM     = 0.45
 # Paused overlay: poster is dimmed to this fraction and stamped with two bars.
 PAUSE_DIM           = 0.35
 PAUSE_FG            = (235, 235, 235)
@@ -112,6 +125,15 @@ def defaults() -> dict:
             # "clock", "blank" (dark), or "poster" (hold the last artwork).
             "idle_mode": "clock",
             "clock_24h": False,
+            # Which half of the panel holds the poster: "left" (the default)
+            # or "right". The text block takes the other half.
+            "poster_side": "left",
+            # How fast a too-wide title slides: see SCROLL_SPEEDS.
+            "scroll_speed": "normal",
+            # Whose stream it is. Off is a reasonable default for a
+            # one-person server, where the row is a wasted eighth of the
+            # panel — the other rows spread out to fill it.
+            "show_user": True,
         },
         "ha": {
             "enabled": False,
@@ -284,6 +306,21 @@ def _idle_mode(v):
     return s
 
 
+def _poster_side(v):
+    s = str(v).strip().lower()
+    if s not in ("left", "right"):
+        raise ValueError(f"unknown poster side: {v!r}")
+    return s
+
+
+def _scroll_speed(v):
+    s = str(v).strip().lower()
+    if s not in SCROLL_SPEEDS:
+        raise ValueError(f"unknown scroll speed: {v!r} (expected one of "
+                         f"{', '.join(SCROLL_SPEEDS)})")
+    return s
+
+
 def _theme(v):
     s = str(v).strip().lower()
     if s not in ("auto", "light", "dark"):
@@ -327,6 +364,9 @@ _VALIDATORS = {
     "display.accent":             _hex_color,
     "display.idle_mode":          _idle_mode,
     "display.clock_24h":          _as_bool,
+    "display.poster_side":        _poster_side,
+    "display.scroll_speed":       _scroll_speed,
+    "display.show_user":          _as_bool,
     "ha.enabled":                 _as_bool,
     "ha.url":                     _url,
     "ha.token":                   str,

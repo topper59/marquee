@@ -232,22 +232,74 @@ time.
 
 ### Rendering constraints
 
-- Left 64x64 is poster art; right 64x64 is text. `RX = 64` (module level —
-  the idle branch needs it too).
+- One 64x64 half is poster art, the other is text. `display.poster_side`
+  (`left`/`right`) swaps them; the render loop derives `poster_x`/`text_x`
+  from it in the `Config.generation` block and every draw is relative to
+  those, so nothing else hardcodes 0/64. `RX = 64` stays as the module-level
+  default. The poster is drawn *after* the title on purpose: a scrolling
+  title used to overrun its own half and the poster image was what painted
+  over the overrun. The sub-pixel path below clips the title at the source
+  instead, so the ordering is now belt-and-braces rather than load-bearing —
+  but the DrawText fallback still overruns, so keep it.
 - `display.accent` is the one colour to change: the progress bar takes it
   neat, the time remaining at `REMAIN_SCALE`, and the setup/link screens use
   it for their headings. Errors stay red. Both are rebuilt only when
   `Config.generation` moves, because `graphics.Color` allocates and this loop
-  runs 20×/second. The web UI keeps its own amber — a user-picked accent
+  runs 60×/second. The web UI keeps its own amber — a user-picked accent
   behind `--on-accent` button text is a contrast problem, not a feature.
 - `display.idle_mode` is `clock` / `blank` / `poster`. `poster` holds
   `State.last_poster` — stashed by `State.replace` at the moment the session
-  list goes empty, which is the last instant the artwork still exists — dims
-  it once per poster (cached on identity, not equality: comparing two PIL
-  images compares pixels), and puts the clock in the right half. It falls
-  back to the clock before anything has played.
+  list goes empty, which is the last instant the artwork still exists — and
+  puts the clock in the text half. It falls back to the clock before anything
+  has played. The held poster is drawn **at full strength**: there used to be
+  an `IDLE_POSTER_DIM` multiply on top, which was a second dimming nobody
+  could reach from the settings page. Panel brightness already carries the
+  schedule, the dim window, and Home Assistant; the idle screen follows them
+  like everything else.
 - An outage outranks all three idle modes, `blank` included: a dark panel is
   exactly what someone would misread as "it broke".
+- The render loop runs at **60fps** (`config.SCROLL_FRAME_MS`), not the 20 it
+  used to. The panel itself refreshes at ~120Hz — measured on the Pi,
+  `SwapOnVSync` blocks a steady 8.33ms (p95 8.35, max 8.37) — so 20fps was
+  discarding five sixths of the positions a moving title could occupy, and
+  that, not any panel setting, is what made scrolling look chunky. 60 divides
+  into 120: pick frame rates that land on a whole number of panel refreshes
+  rather than beating against them. Drawing a frame costs 0.26ms, so the
+  whole loop is ~1.5% of a core.
+- `display.scroll_speed` (`slow`/`normal`/`fast`) indexes
+  `config.SCROLL_SPEEDS` for **pixels per second**; the render loop converts
+  to px/frame in the `Config.generation` block so the frame rate can change
+  without silently retuning every speed. `scroll_offset` is a **float**
+  accumulator — at 60fps every speed is well under a pixel per frame, so an
+  int accumulator would simply never move.
+- A scrolling title is drawn **sub-pixel**, not with `DrawText`.
+  `graphics.DrawText` can only land a glyph on a whole pixel, so a title
+  creeping along at 20px/s lurches a full pixel at a time however high the
+  frame rate goes — raising the frame rate alone got it from 2px lurches to
+  1px, and this is what removes the last of it. `make_title_phases`
+  supersamples the string `config.SCROLL_SUBPIXEL`× horizontally and
+  box-filters it back down at each of N starting offsets; the loop then does
+  `divmod(int(offset * SUB), SUB)` — whole pixels pick the 64px window, the
+  remainder picks the phase — and blits with `SetImage`. Cached on the
+  `Session` like `make_paused_poster` and carried across polls in
+  `State.replace` keyed on the **title**, not `thumb_path`. Measured on the
+  Pi: 3ms to build the four phases once per title, 0.144ms per frame against
+  0.065ms for the `DrawText` it replaced, so about +0.5% of a core.
+  - This works because PIL reads the same BDF via `BdfFontFile` and agrees
+    with `text_width` to the pixel (checked across proportional strings), and
+    because PIL's `text()` at top=0 lines up with the rgbmatrix cell — blit
+    at `title_y - font.baseline`.
+  - `load_pil_title_font()` returns None if the BDF will not compile, and the
+    scroll branch falls back to whole-pixel `DrawText`. Keep that fallback:
+    it is the difference between a slightly chunkier title and a blank half.
+  - The box filter has to conserve ink or the title visibly pulses in
+    brightness as it slides. The smoke test asserts <2% spread across phases.
+- Panel timing was measured and is **not** the lever: `gpio_slowdown` 2 is
+  marginally *worse* than the configured 4 (8.60 vs 8.14ms), `pwm_bits` 9
+  buys only 6% refresh over 11 and costs two bits of depth, and
+  `limit_refresh_rate_hz=120` sits right at what the panel reaches unlimited
+  (123Hz), so it is close to a no-op. Leave all three alone; the frame rate
+  the loop feeds the panel is the thing that matters.
 - The progress bar and time remaining are drawn straight from the polled
   `viewOffset`. **Do not interpolate between polls** — this was tried and
   reverted. PMS only refreshes `viewOffset` about every 10s (measured: clean
@@ -264,7 +316,11 @@ time.
   different claims and must not be conflated.
 - Vertical positions are **computed**, not hardcoded — `compute_text_layout`
   distributes blocks using each font's real `.height`/`.baseline`. Don't
-  reintroduce magic baseline constants.
+  reintroduce magic baseline constants. `display.show_user` exploits this:
+  hiding the user line passes three fonts instead of four and the remaining
+  rows re-spread over the same region, so there is no hole where it was.
+  Layout therefore lives in the `Config.generation` block, not at loop start,
+  and the `Layout:` log line reprints on every settings save.
 - Widths are **measured** per-glyph (`text_width`); fonts may be proportional.
 - `wrap_two_lines` never revisits a line once it has moved on (prevents
   silent word reordering).

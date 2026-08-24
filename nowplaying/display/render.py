@@ -6,20 +6,24 @@ import logging
 import threading
 from datetime import datetime, time as dtime
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from rgbmatrix import RGBMatrix, graphics
 
 from nowplaying import config
 from nowplaying.netmgr import local_ip
 from nowplaying.display.state import State, DisplayMode
 from nowplaying.display.matrix import (
-    load_fonts, text_width, compute_text_layout, wrap_two_lines, format_remaining,
+    load_fonts, load_pil_title_font, text_width, compute_text_layout,
+    wrap_two_lines, format_remaining,
 )
 
 log = logging.getLogger("plex-matrix")
 
-# Left 64x64 is poster art, right 64x64 is text.
+# One half is poster art, the other is text. `display.poster_side` swaps
+# them; RX is the default text origin (poster left) and the fallback for
+# code that has no config snapshot to hand.
 RX = 64
+TITLE_FG = (220, 220, 220)
 AMBER = (229, 160, 13)
 GRAY  = (150, 150, 150)
 RED   = (200, 60, 50)
@@ -143,22 +147,53 @@ def make_paused_poster(img: Image.Image) -> Image.Image:
     return out
 
 
+def make_title_phases(text: str, pil_font, height: int,
+                      color: tuple = TITLE_FG) -> list:
+    """`text` pre-rendered at each horizontal sub-pixel phase.
+
+    A title creeping across the panel can only ever be drawn on whole pixels
+    by `graphics.DrawText`, so however fast the render loop runs it moves in
+    1px lurches. These are the same string sampled at 0, 1/N, 2/N … of a pixel
+    to the right: the strip is supersampled N× horizontally and box-filtered
+    back down, so a glyph edge falling between two panel columns lights both
+    in proportion and the motion reads as continuous.
+
+    Built once per title and cached on the Session, like make_paused_poster —
+    about a millisecond here against 0.02ms per frame for the crop.
+    """
+    sub = config.SCROLL_SUBPIXEL
+    w   = int(pil_font.getlength(text))
+    # One spare column on the right so the last phase still has a full
+    # supersampled pixel to average over.
+    base = Image.new("L", (w + 1, height))
+    ImageDraw.Draw(base).text((0, 0), text, font=pil_font, fill=255)
+    wide = base.resize(((w + 1) * sub, height), Image.NEAREST)
+    phases = []
+    for k in range(sub):
+        window = wide.crop((k, 0, k + w * sub, height))
+        mask   = window.resize((w, height), Image.BOX)
+        # Colorized here rather than per frame: SetImage wants RGB, and the
+        # title colour never changes.
+        phases.append(ImageOps.colorize(mask, (0, 0, 0), color))
+    return phases
+
+
 def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.Event):
     from nowplaying.config import parse_hhmm
 
     _font_big, _font_sm, _font_sub, _font_clk = load_fonts()
-    title_y, sub_y, user_y, rem_y = compute_text_layout(
-        [_font_big, _font_sub, _font_sm, _font_sm])
-    log.info("Layout: title y=%d, subtitle y=%d, user y=%d, remaining y=%d",
-             title_y, sub_y, user_y, rem_y)
+    # None on any font it cannot compile; the scroll branch falls back to
+    # whole-pixel DrawText in that case.
+    _pil_title = load_pil_title_font()
 
     canvas = matrix.CreateFrameCanvas()
-    white  = graphics.Color(220, 220, 220)
+    white  = graphics.Color(*TITLE_FG)
     clk_c  = graphics.Color(*config.IDLE_DIM)
     sub_c  = graphics.Color(160, 160, 160)
     user_c = graphics.Color(120, 120, 200)
 
-    scroll_offset     = 0
+    # Float, so a sub-pixel speed accumulates instead of rounding to zero.
+    scroll_offset     = 0.0
     scroll_dir        = 1
     scroll_pause_until = 0.0
     last_session_key  = None
@@ -176,7 +211,12 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
     remain_c = graphics.Color(*config.scale_rgb(accent_rgb, config.REMAIN_SCALE))
     idle_mode = "clock"
     clock_fmt = "%I:%M %p"
-    idle_src = idle_dimmed = None
+    # Origins of the two 64x64 halves. Everything below is drawn relative to
+    # these rather than to hardcoded 0/64, so the swap is one assignment.
+    poster_x, text_x = 0, RX
+    scroll_px = config.SCROLL_SPEEDS["normal"] * config.SCROLL_FRAME_MS / 1000
+    show_user = True
+    title_y = sub_y = user_y = rem_y = 0
     needs_setup = False
     setup_addr = {"host": "", "ip": ""}
     addr_checked = 0.0
@@ -194,6 +234,26 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             dim_start   = parse_hhmm(disp["dim_start"])
             dim_stop    = parse_hhmm(disp["dim_stop"])
             idle_mode   = disp["idle_mode"]
+            # px/sec → px/frame, converted here rather than per frame:
+            # this block only re-runs when the config generation moves.
+            scroll_px = (config.SCROLL_SPEEDS[disp["scroll_speed"]]
+                         * config.SCROLL_FRAME_MS / 1000)
+            # Dropping the user line means one fewer block to distribute, not
+            # a gap where it used to be — compute_text_layout re-spreads what
+            # is left over the same region.
+            show_user = disp["show_user"]
+            blocks = [_font_big, _font_sub, _font_sm, _font_sm]
+            if show_user:
+                title_y, sub_y, user_y, rem_y = compute_text_layout(blocks)
+            else:
+                title_y, sub_y, rem_y = compute_text_layout(blocks[:3])
+                user_y = None
+            log.info("Layout: title y=%d, subtitle y=%d, user y=%s, remaining y=%d",
+                     title_y, sub_y, user_y if show_user else "hidden", rem_y)
+            if disp["poster_side"] == "right":
+                poster_x, text_x = RX, 0
+            else:
+                poster_x, text_x = 0, RX
             clock_fmt   = "%H:%M" if disp["clock_24h"] else "%I:%M %p"
             # Built here rather than per frame: graphics.Color allocates, and
             # this loop runs 20 times a second.
@@ -307,16 +367,12 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                 pass  # canvas is already cleared; swap it out dark
 
             elif idle_mode == "poster" and held is not None:
-                # Dimmed once per poster, not per frame. `is` rather than ==:
-                # comparing two PIL images compares pixels, which is exactly
-                # the per-frame cost this cache exists to avoid.
-                if idle_src is not held:
-                    idle_src = held
-                    idle_dimmed = held.point(
-                        lambda v: int(v * config.IDLE_POSTER_DIM))
-                canvas.SetImage(idle_dimmed, 0, 0)
+                # Drawn at full strength: the panel brightness already
+                # carries the schedule, the dim window, and Home Assistant,
+                # so a second dim here was just a knob nobody could reach.
+                canvas.SetImage(held, poster_x, 0)
                 t = time.strftime(clock_fmt)
-                x = RX + max(0, (64 - text_width(_font_clk, t)) // 2)
+                x = text_x + max(0, (64 - text_width(_font_clk, t)) // 2)
                 graphics.DrawText(canvas, _font_clk, x, 36, clk_c, t)
 
             else:
@@ -336,65 +392,95 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             tw    = text_width(_font_big, title)
             if tw <= 64:
                 graphics.DrawText(canvas, _font_big,
-                                  RX + max(0, (64 - tw) // 2), title_y, white, title)
+                                  text_x + max(0, (64 - tw) // 2), title_y, white, title)
             else:
                 if current.session_key != last_session_key:
-                    scroll_offset      = 0
+                    scroll_offset      = 0.0
                     scroll_dir         = 1
                     scroll_pause_until = now + (config.SCROLL_PAUSE_MS / 1000)
+                if _pil_title is not None and current.title_phases is None:
+                    current.title_phases = make_title_phases(
+                        title, _pil_title, _font_big.height)
+                phases = current.title_phases
+                # The strip's own width, so the bound and the crop can never
+                # disagree about where the title ends.
+                span = (phases[0].width if phases else tw) - 64
                 if now >= scroll_pause_until:
-                    scroll_offset += config.SCROLL_PX_PER_FRAME * scroll_dir
-                    if scroll_offset >= (tw - 64):
-                        scroll_offset      = tw - 64
+                    scroll_offset += scroll_px * scroll_dir
+                    if scroll_offset >= span:
+                        scroll_offset      = float(span)
                         scroll_dir         = -1
                         scroll_pause_until = now + (config.SCROLL_PAUSE_MS / 1000)
                     elif scroll_offset <= 0:
-                        scroll_offset      = 0
+                        scroll_offset      = 0.0
                         scroll_dir         = 1
                         scroll_pause_until = now + (config.SCROLL_PAUSE_MS / 1000)
-                graphics.DrawText(canvas, _font_big, RX - scroll_offset, title_y, white, title)
+                if phases:
+                    # Whole pixels pick the window, the fraction picks the
+                    # phase — together they address the title at 1/N of a
+                    # pixel, which is the entire point of the exercise.
+                    # divmod rather than two operations so the two can never
+                    # be rounded inconsistently at a pixel boundary.
+                    sx, k = divmod(int(scroll_offset * config.SCROLL_SUBPIXEL),
+                                   config.SCROLL_SUBPIXEL)
+                    # Clipped at the source, so unlike DrawText this cannot
+                    # overrun into the poster half at all.
+                    canvas.SetImage(
+                        phases[k].crop((sx, 0, sx + 64, _font_big.height)),
+                        text_x, title_y - _font_big.baseline)
+                else:
+                    # No PIL font: whole pixels, as before. Truncated only at
+                    # the draw so the accumulator keeps its fraction. Floor,
+                    # not round() — banker's ties make a crawl uneven.
+                    graphics.DrawText(canvas, _font_big,
+                                      text_x - int(scroll_offset),
+                                      title_y, white, title)
 
             last_session_key = current.session_key
 
+            # Drawn after the title on purpose: a scrolling title overruns
+            # its own half, and the poster is what paints over the overrun.
+            # That holds whichever side the poster is on.
             if current.poster is not None:
                 poster = current.poster
                 if current.state == "paused":
                     if current.poster_paused is None:
                         current.poster_paused = make_paused_poster(poster)
                     poster = current.poster_paused
-                canvas.SetImage(poster, 0, 0)
+                canvas.SetImage(poster, poster_x, 0)
             else:
                 for py in range(64):
                     for px in range(64):
                         if (px + py) % 8 == 0:
-                            canvas.SetPixel(px, py, 30, 30, 30)
+                            canvas.SetPixel(poster_x + px, py, 30, 30, 30)
 
             sub_text = current.subtitle or ""
             sw = text_width(_font_sub, sub_text)
             if sw <= 64:
                 graphics.DrawText(canvas, _font_sub,
-                                  RX + max(0, (64 - sw) // 2), sub_y, sub_c, sub_text)
+                                  text_x + max(0, (64 - sw) // 2), sub_y, sub_c, sub_text)
             else:
                 # Two small lines fill exactly the block the single large line
                 # would have occupied, so nothing collides with the row below.
                 block_top = sub_y - _font_sub.baseline
                 line1_y   = block_top + _font_sm.baseline
                 line1, line2 = wrap_two_lines(sub_text, sub_max_chars)
-                graphics.DrawText(canvas, _font_sm, RX + 1, line1_y, sub_c, line1)
+                graphics.DrawText(canvas, _font_sm, text_x + 1, line1_y, sub_c, line1)
                 if line2:
-                    graphics.DrawText(canvas, _font_sm, RX + 1,
+                    graphics.DrawText(canvas, _font_sm, text_x + 1,
                                       line1_y + _font_sm.height, sub_c, line2)
 
-            user = (current.user or "")[:sub_max_chars]
-            graphics.DrawText(canvas, _font_sm, RX + 1, user_y, user_c, user)
+            if show_user:
+                user = (current.user or "")[:sub_max_chars]
+                graphics.DrawText(canvas, _font_sm, text_x + 1, user_y, user_c, user)
 
             remaining = format_remaining(current.duration_ms,
                                          current.view_offset_ms)
             if remaining:
-                graphics.DrawText(canvas, _font_sm, RX + 1, rem_y,
+                graphics.DrawText(canvas, _font_sm, text_x + 1, rem_y,
                                   remain_c, remaining)
 
-            bar_x0, bar_x1 = 65, 126
+            bar_x0, bar_x1 = text_x + 1, text_x + 62
             bar_y0, bar_y1 = config.BAR_Y0, config.BAR_Y1
             for bx in range(bar_x0, bar_x1 + 1):
                 for by in range(bar_y0, bar_y1 + 1):
@@ -407,7 +493,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             idx, n = state.cycle_position()
             if n > 1:
                 for i in range(n):
-                    dx    = 127 - (n - 1 - i) * 3
+                    dx    = text_x + 63 - (n - 1 - i) * 3
                     color = (200, 200, 200) if i == idx else (60, 60, 60)
                     canvas.SetPixel(dx, config.DOTS_Y, *color)
                     canvas.SetPixel(dx, config.DOTS_Y + 1, *color)

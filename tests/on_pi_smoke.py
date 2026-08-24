@@ -84,6 +84,17 @@ bottoms = [t + f.height for t, f in zip(tops, fonts)]
 check("blocks do not overlap", all(bottoms[i] <= tops[i + 1] for i in range(3)))
 check("fits region", bottoms[-1] <= 50)
 
+# Hiding the user line hands its space back to the other rows rather than
+# leaving a hole where it was.
+three = compute_text_layout(fonts[:3], bottom=50)
+check("one baseline per remaining font", len(three) == 3)
+check("still monotonic", all(a < b for a, b in zip(three, three[1:])))
+t3 = [y - f.baseline for y, f in zip(three, fonts[:3])]
+b3 = [t + f.height for t, f in zip(t3, fonts[:3])]
+check("three blocks do not overlap", all(b3[i] <= t3[i + 1] for i in range(2)))
+check("three blocks fit the region", b3[-1] <= 50)
+check("the rows spread out rather than leaving a gap", b3[-1] > bottoms[-2])
+
 print("State")
 st = State()
 st.replace([sess("a"), sess("b")])
@@ -891,6 +902,124 @@ with tempfile.TemporaryDirectory() as d:
         ac.update({"display.idle_mode": mode})
         check(f"idle mode {mode!r} accepted",
               ac.get()["display"]["idle_mode"] == mode)
+
+    check("the poster starts on the left",
+          ac.get()["display"]["poster_side"] == "left")
+    try:
+        ac.update({"display.poster_side": "middle"})
+        rejected = False
+    except ValueError:
+        rejected = True
+    check("an unknown poster side is rejected", rejected)
+    for side in ("Right", "left"):
+        ac.update({"display.poster_side": side})
+        check(f"poster side {side!r} accepted and folded",
+              ac.get()["display"]["poster_side"] == side.lower())
+
+    check("scrolling starts at normal speed",
+          ac.get()["display"]["scroll_speed"] == "normal")
+    try:
+        ac.update({"display.scroll_speed": "ludicrous"})
+        rejected = False
+    except ValueError:
+        rejected = True
+    check("an unknown scroll speed is rejected", rejected)
+    for speed in cfgmod.SCROLL_SPEEDS:
+        ac.update({"display.scroll_speed": speed})
+        check(f"scroll speed {speed!r} accepted",
+              ac.get()["display"]["scroll_speed"] == speed)
+    # Speeds are px/sec now, so the frame rate can move without retuning
+    # them. Sub-pixel is still the whole point: at 60fps every one of these
+    # is well under a pixel a frame, which only works because the render
+    # loop's accumulator is a float.
+    frame_s = cfgmod.SCROLL_FRAME_MS / 1000
+    check("speeds are ordered slow < normal < fast",
+          cfgmod.SCROLL_SPEEDS["slow"] < cfgmod.SCROLL_SPEEDS["normal"]
+          < cfgmod.SCROLL_SPEEDS["fast"])
+    check("every speed is under a pixel a frame",
+          all(v * frame_s < 1 for v in cfgmod.SCROLL_SPEEDS.values()))
+    # The panel runs at ~120Hz; the loop should divide into that, not beat
+    # against it. 60fps is every second refresh.
+    check("the frame period is a whole number of 120Hz panel refreshes",
+          abs((cfgmod.SCROLL_FRAME_MS / (1000 / 120)) % 1) < 1e-9)
+
+    check("the user line is shown by default",
+          ac.get()["display"]["show_user"] is True)
+    ac.update({"display.show_user": False})
+    check("and can be turned off",
+          ac.get()["display"]["show_user"] is False)
+
+print("sub-pixel title scrolling")
+# Needs the real BDF fonts, which is why this lives in the on-Pi suite.
+from nowplaying.display.matrix import load_pil_title_font  # noqa: E402
+from nowplaying.display.render import make_title_phases    # noqa: E402
+
+_pf = load_pil_title_font()
+check("the title font compiles for PIL", _pf is not None)
+if _pf is not None:
+    TITLE = "A Very Long Episode Title That Has To Scroll"
+    H = 13
+    phases = make_title_phases(TITLE, _pf, H)
+    check("one phase per sub-pixel step",
+          len(phases) == cfgmod.SCROLL_SUBPIXEL)
+    check("every phase is the same size",
+          len({p.size for p in phases}) == 1)
+    check("the strip is as wide as the text",
+          phases[0].width == int(_pf.getlength(TITLE)))
+
+    # Phase 0 is the string on whole pixels; the rest must carry partial
+    # coverage or nothing has actually been gained over DrawText.
+    def levels(img):
+        return {px[0] for px in img.convert("RGB").getdata()}
+
+    check("phase 0 is crisp (no partial columns)",
+          levels(phases[0]) <= {0, 220})
+    check("later phases are anti-aliased",
+          all(levels(p) - {0, 220} for p in phases[1:]))
+    check("no two phases are identical",
+          len({p.tobytes() for p in phases}) == len(phases))
+
+    # A box filter that loses or gains ink would make the title pulse in
+    # brightness as it slides. Total coverage has to hold across phases.
+    ink = [sum(px[0] for px in p.convert("RGB").getdata()) for p in phases]
+    check("brightness is conserved across phases (<2% spread)",
+          (max(ink) - min(ink)) / max(ink) < 0.02)
+
+    # The addressing the render loop uses: whole pixels choose the window,
+    # the fraction chooses the phase. Every offset in range must yield a
+    # 64px crop that fits inside the strip — an off-by-one here is a
+    # blacked-out or crashed title, not a cosmetic glitch.
+    span = phases[0].width - 64
+    bad = []
+    steps = int(span * cfgmod.SCROLL_SUBPIXEL)
+    for i in range(steps + 1):
+        off = i / cfgmod.SCROLL_SUBPIXEL
+        sx, k = divmod(int(off * cfgmod.SCROLL_SUBPIXEL), cfgmod.SCROLL_SUBPIXEL)
+        if not (0 <= k < len(phases)) or sx < 0 or sx + 64 > phases[k].width:
+            bad.append(off)
+    check("every offset from 0 to the far end addresses a valid window",
+          not bad)
+    # And the two ends specifically, since those are what the bounce clamps to.
+    check("offset 0 starts at the first column",
+          divmod(0, cfgmod.SCROLL_SUBPIXEL) == (0, 0))
+    sx, k = divmod(int(span * cfgmod.SCROLL_SUBPIXEL), cfgmod.SCROLL_SUBPIXEL)
+    check("the far end lands exactly on the last column",
+          sx + 64 == phases[k].width and k == 0)
+
+print("title strip caching")
+_a = Session(session_key="1", title="Same Title", subtitle="", user="",
+             progress=0.0, thumb_path="/t1")
+_a.title_phases = ["CACHED"]
+_st = State()
+_st.replace([_a])
+_st.replace([Session(session_key="1", title="Same Title", subtitle="", user="",
+                     progress=0.5, thumb_path="/t1")])
+check("the strip survives a poll that did not change the title",
+      _st.current().title_phases == ["CACHED"])
+_st.replace([Session(session_key="1", title="A New Title", subtitle="", user="",
+                     progress=0.5, thumb_path="/t1")])
+check("and is dropped when the title changes",
+      _st.current().title_phases is None)
 
 print("schedule and dim windows")
 t = lambda h, m=0: __import__("datetime").time(h, m)
