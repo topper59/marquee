@@ -96,6 +96,38 @@ ssh root@192.168.2.129 '/opt/marquee/venv/bin/python /opt/marquee/tests/on_pi_sm
 The service logs its computed layout on startup (`Layout: title y=...`), which
 is the quickest way to confirm a font or spacing change took effect.
 
+### Software updates (marquee/update.py, release/)
+
+An update is one signed `.mqup` file: `payload.tar.gz` (manifest, `marquee/`
+package, requirements.txt) + a raw Ed25519 signature over the payload bytes.
+Two delivery paths — the device pulls it from GitHub Releases
+(`update.UPDATE_REPO`, checked daily when `updates.auto_check`), or the user
+uploads the same file on the settings page — converge on
+`/var/lib/marquee/updates/pending.mqup` and one applier. The public key
+embedded in `update.py` is the entire trust boundary; the private key is
+**only** at `~/.config/marquee-release/signing.key` on the dev machine (plus
+offline backup), never in the repo or CI. Downgrades are refused by version
+compare against the *signed* manifest; the CLI `--force` exists for bench
+work and is not reachable from the web API.
+
+`/opt/marquee/marquee` is a **symlink** into `/opt/marquee/versions/<v>/`.
+The applier (`python -m marquee.update apply`, detached via systemd-run like
+restart/factory-reset, because it restarts the service it was asked from)
+unpacks beside the running version, runs pip only when requirements.txt
+changed (before the flip, so a pip failure aborts cleanly), flips the
+symlink, restarts, then watches `ActiveState`/`NRestarts` for ~20s — a
+version that does not stay up is flipped back automatically. Every outcome
+is written to `updates/last_result.json` because the browser that asked was
+disconnected mid-install; the settings page reports it on next load.
+`versions/dev` is deploy.sh's target and is never pruned; releases keep
+current + previous.
+
+Cutting a release: bump `__version__` in `marquee/__init__.py`, commit, then
+`release/release.sh "notes"` (builds+signs `dist/marquee-<v>.mqup`, verifies
+it with the shipped verifier, tags, `gh release create`). `release/build.py
+--keygen` is one-time and refuses to overwrite — a new key orphans every
+device in the field.
+
 ### Factory reset without the button
 
 `marquee/factoryreset.py` is the shared implementation (the GPIO hold path

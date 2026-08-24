@@ -360,11 +360,18 @@ def apply_bundle(path: str, force: bool = False) -> int:
         log.info("Update to %s healthy", new_v)
         return 0
 
-    # The new version did not stay up — put the old one back.
+    # The new version did not stay up — put the old one back, and throw away
+    # both the unpacked tree and the pending bundle: code proven not to run
+    # here must not sit around looking installable.
     tail = _journal_tail()
     log.error("Update to %s unhealthy — rolling back to %s", new_v, prev)
     _flip_link(prev)
     subprocess.run(["systemctl", "restart", SERVICE])
+    shutil.rmtree(vdir, ignore_errors=True)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
     write_result("rolled_back", current_v, new_v,
                  f"the new version did not start, so {current_v} was "
                  f"restored. Log excerpt:\n{tail}")
