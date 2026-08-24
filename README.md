@@ -1,5 +1,8 @@
 # Marquee
 
+<img width="2081" height="1279" alt="image" src="https://github.com/user-attachments/assets/c85c6d93-5b13-4dd9-a1bd-6ceb2c2ae71c" />
+
+
 A now-playing display for Plex on a 128×64 HUB75 LED matrix, driven by a
 Raspberry Pi 4 with an Adafruit RGB Matrix Bonnet. One half of the panel is
 poster art; the other shows the title, episode, who's watching, time
