@@ -118,8 +118,6 @@ check("poster dropped when thumb changes", st.current().poster is None)
 print("Config")
 with tempfile.TemporaryDirectory() as td:
     path = os.path.join(td, "config.json")
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".factory-reset")
 
     c = Config(path)
     d = c.get()
@@ -225,35 +223,6 @@ with tempfile.TemporaryDirectory() as td:
     check("persisted across reload", c2.get()["display"]["cycle_seconds"] == 15)
     check("client id stable", c2.get()["device"]["client_id"] == d["device"]["client_id"])
 
-    # Migration from a legacy env file
-    env = os.path.join(td, "legacy.env")
-    with open(env, "w") as f:
-        f.write("# comment\nPLEX_URL=https://192.168.1.3:32400\n"
-                "PLEX_VERIFY_SSL=false\nHA_TOKEN=tok123\nPOLL_SECONDS=10\n"
-                "BRIGHTNESS_NORMAL=45\nSCHEDULE_START=08:00\nSCHEDULE_STOP=00:00\n"
-                "TAUTULLI_URL=http://dead\nBOGUS LINE\n")
-    cfgmod.LEGACY_ENV_PATH = env
-    mpath = os.path.join(td, "migrated.json")
-    cm = Config(mpath)
-    md = cm.get()
-    check("migrated plex url", md["plex"]["url"] == "https://192.168.1.3:32400")
-    check("migrated poll", md["plex"]["poll_seconds"] == 10)
-    check("migrated brightness", md["display"]["brightness_normal"] == 45)
-    check("migrated schedule", md["display"]["schedule_start"] == "08:00")
-    check("ha auto-enabled with token", md["ha"]["enabled"] is True and md["ha"]["token"] == "tok123")
-    check("legacy ha url default kept", md["ha"]["url"] == "https://ha.example.com")
-    check("legacy tv entity default kept", md["ha"]["tv_entity"] == "media_player.living_room_tv")
-    check("migrated device provisioned", md["provisioned"] is True)
-    check("migration leaves network alone", md["network"]["manage"] is False)
-    check("migration defaults to DHCP", md["network"]["ipv4_method"] == "auto")
-    check("migration keeps sunset requirement", md["ha"]["require_sunset"] is True)
-    check("unknown env keys ignored", "TAUTULLI_URL" not in json.dumps(md))
-
-    # Factory-reset marker suppresses migration
-    open(cfgmod.NO_MIGRATE_MARKER, "w").close()
-    cr = Config(os.path.join(td, "reset.json"))
-    check("marker blocks migration", cr.get()["provisioned"] is False)
-
     # Corrupt file falls back instead of boot-looping
     bad = os.path.join(td, "bad.json")
     with open(bad, "w") as f:
@@ -267,8 +236,6 @@ from marquee import factoryreset  # noqa: E402
 from marquee.netmgr import STATION_CON  # noqa: E402
 
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".factory-reset")
 
     # Neither nmcli nor systemd-run may actually run from a test, and the
     # default config path must be redirected — main() with no argument would
@@ -286,8 +253,6 @@ with tempfile.TemporaryDirectory() as td:
 
         factoryreset.reset(cpath, keep_wifi=True, restart=False)
         check("reset removes config", not os.path.exists(cpath))
-        check("reset writes no-migrate marker",
-              os.path.exists(cfgmod.NO_MIGRATE_MARKER))
         check("keep_wifi leaves profiles alone", not ran)
 
         try:
@@ -382,8 +347,6 @@ class FakeNM:
 
 
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     nc = Config(os.path.join(td, "net.json"))
     nc.update({"network.join_timeout_s": 10})
     fake = FakeNM()
@@ -434,8 +397,6 @@ with tempfile.TemporaryDirectory() as td:
 
 print("static addressing")
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     ic = Config(os.path.join(td, "ip.json"))
     ifake = FakeNM()
     ifake.profiles[STATION_CON] = True
@@ -547,8 +508,6 @@ for tv, sun, want_sunset, want_always in (
 
 print("web link flow")
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     import marquee.web.server as websrv
 
     # Stub the network calls: this exercises our state handling, not plex.tv.
@@ -591,8 +550,6 @@ with tempfile.TemporaryDirectory() as td:
 
 print("plex sign-in cancel")
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     import marquee.web.server as websrv
 
     websrv.plex_auth = types.SimpleNamespace(
@@ -627,8 +584,6 @@ with tempfile.TemporaryDirectory() as td:
 
 print("theme")
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     import marquee.web.server as websrv
 
     tc = Config(os.path.join(td, "theme.json"))
@@ -655,8 +610,6 @@ with tempfile.TemporaryDirectory() as td:
 
 print("web factory reset")
 with tempfile.TemporaryDirectory() as td:
-    cfgmod.LEGACY_ENV_PATH = os.path.join(td, "none.env")
-    cfgmod.NO_MIGRATE_MARKER = os.path.join(td, ".marker")
     import marquee.web.server as websrv
 
     # systemd-run must not actually fire from a test — this Pi would wipe

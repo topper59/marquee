@@ -9,9 +9,7 @@ Type=simple
 # Must start as root for GPIO; the script calls drop_privileges via librgbmatrix
 User=root
 WorkingDirectory=/opt/marquee
-# Config lives in /var/lib/marquee/config.json. The legacy env file at
-# /etc/plex-matrix.env is read directly (not via systemd) as a one-time
-# migration source when no config.json exists.
+# Config lives in /var/lib/marquee/config.json.
 ExecStart=/opt/marquee/venv/bin/python -m marquee
 # Creates /var/lib/marquee for config.json
 StateDirectory=marquee

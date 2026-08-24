@@ -5,10 +5,6 @@ All user-tunable settings live in a JSON document (default
 snapshot with get() each loop iteration; update() validates, merges, bumps
 `generation`, and persists atomically, so changes from the web UI apply
 without a restart for everything except the matrix hardware options.
-
-On first start with no config file, settings migrate from the legacy
-/etc/plex-matrix.env so an already-provisioned device keeps working. A
-factory reset suppresses that migration via a marker file.
 """
 
 import os
@@ -25,13 +21,6 @@ from marquee.plex import filters
 log = logging.getLogger(__name__)
 
 CONFIG_PATH = os.environ.get("MARQUEE_CONFIG", "/var/lib/marquee/config.json")
-# Deliberately still the old name: this is a historical path on devices
-# provisioned before config.json existed, so renaming it would break the
-# one thing it is for.
-LEGACY_ENV_PATH = "/etc/plex-matrix.env"
-# Written by a factory reset: its presence stops the legacy env file from
-# resurrecting the old configuration on the next boot.
-NO_MIGRATE_MARKER = "/var/lib/marquee/.factory-reset"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed visual tuning — deliberately not user configuration
@@ -453,73 +442,6 @@ RESTART_REQUIRED = {"web.enabled", "web.port"} | {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Legacy env-file migration
-# ─────────────────────────────────────────────────────────────────────────────
-_ENV_MAP = {
-    "PLEX_URL":             ("plex.url", _url),
-    "PLEX_TOKEN":           ("plex.token", str),
-    "PLEX_VERIFY_SSL":      ("plex.verify_ssl", _as_bool),
-    "POLL_SECONDS":         ("plex.poll_seconds", int),
-    "STALE_AFTER_FAILURES": ("plex.stale_after_failures", int),
-    "HTTP_TIMEOUT":         ("plex.http_timeout", int),
-    "CYCLE_SECONDS":        ("display.cycle_seconds", int),
-    "BRIGHTNESS_NORMAL":    ("display.brightness_normal", int),
-    "BRIGHTNESS_DIM":       ("display.brightness_dim", int),
-    "SCHEDULE_START":       ("display.schedule_start", _hhmm),
-    "SCHEDULE_STOP":        ("display.schedule_stop", _hhmm),
-    "HA_URL":               ("ha.url", _url),
-    "HA_TOKEN":             ("ha.token", str),
-    "HA_TV_ENTITY":         ("ha.tv_entity", str),
-    "HA_POLL_SECONDS":      ("ha.poll_seconds", int),
-    "LOG_LEVEL":            ("log_level", _log_level),
-}
-
-# The old code baked these into its env-var defaults; a migrated device that
-# never overrode them must keep the same effective values.
-_LEGACY_DEFAULTS = {
-    "plex.url": "https://192.168.1.3:32400",
-    "ha.url": "https://ha.example.com",
-    "ha.tv_entity": "media_player.living_room_tv",
-    "display.schedule_start": "07:00",
-    "display.schedule_stop": "00:00",
-}
-
-
-def _migrate_legacy_env(env_path: str, data: dict) -> bool:
-    """Fold /etc/plex-matrix.env into `data`. True if the file was read."""
-    try:
-        with open(env_path, encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError:
-        return False
-
-    for path, value in _LEGACY_DEFAULTS.items():
-        _set_path(data, path, value)
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, raw = line.partition("=")
-        key, raw = key.strip(), raw.strip().strip('"').strip("'")
-        target = _ENV_MAP.get(key)
-        if target is None:
-            continue
-        path, convert = target
-        try:
-            _set_path(data, path, convert(raw))
-        except (ValueError, TypeError) as e:
-            log.warning("Migration: ignoring %s=%r (%s)", key, raw, e)
-
-    if _get_path(data, "ha.token"):
-        _set_path(data, "ha.enabled", True)
-    data["provisioned"] = True
-    # An upgraded device already has working WiFi set up by other means;
-    # never take its network over on the strength of a version bump.
-    _set_path(data, "network.manage", False)
-    return True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Dotted-path helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_path(d: dict, path: str):
@@ -556,10 +478,7 @@ class Config:
         self.generation = 0
         self._data = defaults()
 
-        loaded = self._load()
-        if not loaded and not os.path.exists(NO_MIGRATE_MARKER):
-            if _migrate_legacy_env(LEGACY_ENV_PATH, self._data):
-                log.info("Migrated config from %s", LEGACY_ENV_PATH)
+        self._load()
         if not self._data["device"]["client_id"]:
             self._data["device"]["client_id"] = str(uuid.uuid4())
         self._save_locked()
@@ -572,7 +491,7 @@ class Config:
             return False
         except (OSError, json.JSONDecodeError) as e:
             # Never boot-loop over a corrupt file: keep it for forensics and
-            # fall back to defaults + migration.
+            # fall back to defaults.
             log.error("Config file unreadable (%s) — starting from defaults", e)
             try:
                 os.replace(self.path, self.path + ".corrupt")

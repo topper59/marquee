@@ -3,9 +3,8 @@
 The button path lives in resetbtn.py; both call reset() here so there is one
 implementation of "what a reset actually wipes".
 
-A reset writes the no-migrate marker (so the legacy env file cannot resurrect
-the old settings), deletes config.json, optionally deletes the WiFi profiles,
-and restarts the service into the setup wizard.
+A reset deletes config.json, optionally deletes the WiFi profiles, and
+restarts the service into the setup wizard.
 
 Command line (on the Pi; the package lives on the path, not installed in the
 venv, so it needs the working directory or PYTHONPATH):
@@ -29,7 +28,6 @@ import os
 import logging
 import subprocess
 import sys
-import time
 
 from marquee import config as cfgmod
 from marquee.netmgr import AP_CON, STATION_CON
@@ -41,13 +39,6 @@ def reset(config_path: str = None, keep_wifi: bool = False,
           restart: bool = True) -> None:
     """Wipe configuration (and optionally WiFi profiles), then restart."""
     path = config_path or cfgmod.CONFIG_PATH
-
-    try:
-        os.makedirs(os.path.dirname(cfgmod.NO_MIGRATE_MARKER), exist_ok=True)
-        with open(cfgmod.NO_MIGRATE_MARKER, "w") as f:
-            f.write(str(time.time()) + "\n")
-    except OSError as e:
-        log.error("Could not write no-migrate marker: %s", e)
 
     try:
         os.remove(path)

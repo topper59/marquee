@@ -40,8 +40,7 @@ cancelled only after SSH is confirmed alive. The AP profile is autoconnect=no
 and station profiles autoconnect=yes, so a power cycle always recovers to
 station mode.
 
-`pi/etc/` holds local copies of the unit file, the captive dnsmasq conf, and
-the legacy env file; the env copy is gitignored because it carries real tokens.
+`pi/etc/` holds local copies of the unit file and the captive dnsmasq conf.
 
 ### Hostname
 
@@ -74,17 +73,15 @@ mDNS name, and the `marquee-wifi` / `marquee-ap` nmcli profiles all say
 `marquee` now. Loggers use `getLogger(__name__)` rather than a hardcoded
 string, so a future rename cannot leave one behind.
 
-**`/etc/plex-matrix.env` is the one deliberate survivor.** It is a historical
-path that exists on devices provisioned before config.json did; renaming it
-would break the one-time migration that is its entire purpose. `config.py`
-says so at the constant. Everything else that says `plex-matrix` is a bug.
+Anything that still says `plex-matrix` is a bug. (The env-file migration
+era is over: the one field device was migrated, then the whole legacy layer
+was removed before the repo went public.)
 
 ## Commands
 
 ```bash
 ./deploy.sh              # compileall, rsync package+tests, restart, tail logs
 ./deploy.sh --deps       # also pip install -r requirements.txt in the Pi venv
-./deploy.sh --env        # also push pi/etc/plex-matrix.env (legacy)
 ./deploy.sh --unit       # also push unit + captive dnsmasq conf + daemon-reload
 ```
 
@@ -246,8 +243,7 @@ a same-subnet gateway). Combined rules only fire when the patch touches their
 inputs, so a hand-edited file cannot make unrelated settings unsavable. Threads snapshot per loop iteration —
 most settings apply live; `matrix.*` and `web.*` need a restart
 (`RESTART_REQUIRED`), which the UI flags and performs via detached
-`systemd-run`. On first boot with no config.json, `/etc/plex-matrix.env` is
-migrated once (the `.factory-reset` marker suppresses this). Visual constants
+`systemd-run`. Visual constants
 (`PAUSE_DIM`, `POSTER_SUPERSAMPLE`, `DOTS_Y`, …) and font paths remain module
 constants in config.py — edit and redeploy.
 
@@ -403,7 +399,7 @@ time.
 ## Testing without the panel
 
 `tests/on_pi_smoke.py` runs on the Pi and covers the pure logic: it stubs
-`rgbmatrix` before import, exercises wrap/layout/state/config/migration, and
+`rgbmatrix` before import, exercises wrap/layout/state/config/update logic, and
 drives the `NetManager` state machine with a scripted fake `run_cmd` (no real
 nmcli calls). Add tests there for any new pure logic.
 
