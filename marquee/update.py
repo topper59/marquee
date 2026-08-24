@@ -43,8 +43,8 @@ PRODUCT = "marquee"
 BUNDLE_EXT = ".mqup"
 
 # GitHub repository the checker polls ("owner/repo"). Empty disables the
-# check with a clear message rather than a mystery 404. Set at first release.
-UPDATE_REPO = ""
+# check with a clear message rather than a mystery 404.
+UPDATE_REPO = "topper59/marquee"
 
 # Ed25519 public key (hex). The private half lives only on the maintainer's
 # machine (~/.config/marquee-release/signing.key) — never in this repo, never
