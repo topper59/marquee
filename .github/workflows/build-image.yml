@@ -1,0 +1,69 @@
+# Build the flashable Marquee SD-card image with pi-gen (Raspberry Pi OS
+# Lite + the stage in image/stage-marquee). Runs on demand, and on every
+# published release so each release carries a matching image.
+#
+# The image needs no secrets: it contains only the update public key (in the
+# app source); the signing key never sees CI.
+name: Build SD image
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write   # upload the image to the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Single source of truth: the stage consumes the same files pi/etc/
+      # deploys to the dev device, plus the app source at its current version.
+      - name: Stage app source and system files
+        run: |
+          mkdir -p image/stage-marquee/00-system/files image/stage-marquee/01-app/files
+          cp pi/etc/marquee.service pi/etc/captive-dnsmasq.conf \
+             pi/etc/nftables.conf pi/etc/20auto-upgrades \
+             pi/etc/52marquee-upgrades image/stage-marquee/00-system/files/
+          cp -r marquee image/stage-marquee/01-app/files/marquee
+          find image/stage-marquee/01-app/files/marquee -name '__pycache__' -type d -exec rm -rf {} +
+          cp requirements.txt image/stage-marquee/01-app/files/
+
+      - name: Build image
+        id: build
+        uses: usimd/pi-gen-action@v1
+        with:
+          image-name: marquee
+          pi-gen-version: arm64
+          release: trixie
+          stage-list: stage0 stage1 stage2 ./image/stage-marquee
+          hostname: marquee
+          username: marquee
+          disable-first-boot-user-rename: 1
+          enable-ssh: 0
+          locale: en_US.UTF-8
+          timezone: America/Chicago
+          keyboard-keymap: us
+          keyboard-layout: English (US)
+          wpa-country: US
+          export-last-stage-only: true
+          compression: xz
+          verbose-output: true
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: marquee-sd-image
+          path: ${{ steps.build.outputs.image-path }}
+          retention-days: 30
+
+      - name: Attach image to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ steps.build.outputs.image-path }}" --clobber
