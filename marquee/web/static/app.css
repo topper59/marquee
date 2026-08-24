@@ -121,11 +121,17 @@ h2 { font-size: 16px; margin: 0 0 12px; }
 
 label { display: block; margin: 12px 0; font-size: 14px; color: var(--text); }
 .row { display: flex; gap: 12px; }
-.row label { flex: 1; }
+/* min-width:0 on both the label and its control, or the row overflows on
+   phones: a flex item will not shrink below its content's min-content width,
+   and Safari's native time picker reports a wide one ("12:00 AM" plus the
+   spinner). Two of them side by side then push each other out of the card. */
+.row label { flex: 1; min-width: 0; }
+.row label > input, .row label > select { min-width: 0; }
 
 input[type=text], input[type=password], input[type=number], input[type=time], select {
   display: block;
   width: 100%;
+  max-width: 100%;
   margin-top: 4px;
   padding: 8px 10px;
   border-radius: 7px;
@@ -134,6 +140,15 @@ input[type=text], input[type=password], input[type=number], input[type=time], se
   color: var(--text);
   font-size: 15px;
 }
+/* Safari gives the native time control its own intrinsic sizing and ignores
+   width:100% unless the default appearance is dropped. */
+input[type=time] {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  text-align: center;
+}
+
 input:focus, select:focus {
   outline: none;
   border-color: var(--accent);
