@@ -16,7 +16,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Native arm64 runner (free for public repos): pi-gen's chroot is arm64,
+    # so this needs no qemu emulation and builds several times faster.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -31,13 +33,6 @@ jobs:
           cp -r marquee image/stage-marquee/01-app/files/marquee
           find image/stage-marquee/01-app/files/marquee -name '__pycache__' -type d -exec rm -rf {} +
           cp requirements.txt image/stage-marquee/01-app/files/
-
-      # The runner is x86; pi-gen's chroot is arm64 and needs binfmt_misc
-      # handlers registered before the build container starts.
-      - name: Set up QEMU for arm64
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Build image
         id: build
