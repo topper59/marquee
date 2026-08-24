@@ -227,6 +227,10 @@ async function loadStatus() {
     // change, or a new attempt), so a validation error the user is reading
     // cannot be wiped by a background refresh.
     if (net.ipv4_error) ipv4Error(net.ipv4_error);
+    $("#reboot-needed").hidden = !st.reboot_required;
+    $("#ssh-state").textContent = st.ssh_active ? "On" : "Off";
+    $("#ssh-enable").hidden = !!st.ssh_active;
+    $("#ssh-disable").hidden = !st.ssh_active;
   } catch { /* status is decorative; ignore */ }
 }
 
@@ -425,6 +429,44 @@ field("network.ipv4_method").addEventListener("change", () => {
 $("#net-ipv4-dismiss").addEventListener("click", async () => {
   ipv4Error("");
   await fetch("/api/network/clear-error", { method: "POST" }).catch(() => {});
+});
+
+/* Full OS reboot — offered when a security update wants one. Distinct from
+   the app restart: a new kernel only takes effect this way. */
+$("#reboot-btn").addEventListener("click", async () => {
+  if (!confirm("Restart the display now? It goes dark for about a minute " +
+               "while it reboots.")) return;
+  await fetch("/api/reboot", { method: "POST" });
+  clearInterval(statusTimer);
+  $("#restart-note").hidden = false;
+  $("#restart-note").textContent =
+    "Restarting… this page reloads in about a minute and a half.";
+  toast("Restarting the display…");
+  setTimeout(() => location.reload(), 90000);
+});
+
+async function setSsh(body) {
+  const res = await fetch("/api/ssh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  if (!res.ok) { toast(out.error || "Failed", true); return; }
+  $("#ssh-pw").value = "";
+  toast(out.enabled ? "SSH is on" : "SSH is off");
+  loadStatus();
+}
+
+$("#ssh-on").addEventListener("click", () => {
+  const pw = $("#ssh-pw").value;
+  if (pw.length < 8) { toast("Pick a password of at least 8 characters", true); return; }
+  setSsh({ enabled: true, password: pw });
+});
+
+$("#ssh-off").addEventListener("click", () => {
+  if (confirm("Turn off SSH? Any open SSH sessions are disconnected."))
+    setSsh({ enabled: false });
 });
 
 $("#factory-reset").addEventListener("click", () => factoryReset(false));

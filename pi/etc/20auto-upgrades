@@ -1,0 +1,4 @@
+// Marquee: refresh package lists and run unattended-upgrade daily.
+// What it may install is limited to Debian security (see 52marquee-upgrades).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";

@@ -378,6 +378,14 @@
     <a class="backlink" href="#">‹ Settings</a>
     <div class="card">
       <h2>Device</h2>
+      <div id="reboot-needed" hidden>
+        <p class="hint warn">A system security update has been installed and
+          needs a restart to finish. The display goes dark for about a
+          minute.</p>
+        <div class="actions">
+          <button id="reboot-btn" type="button">Restart the display</button>
+        </div>
+      </div>
       <label>Name
         <input type="text" data-path="device.name" maxlength="32">
       </label>
@@ -406,6 +414,30 @@
       </label>
       <p class="hint">With a password set, this page asks for it before allowing
         changes. Leave it off on a trusted home network if you prefer.</p>
+    </div>
+
+    <div class="card">
+      <h2>Remote access <span class="tag">SSH</span></h2>
+      <p class="hint">A command-line login (as <code>root</code>) over your
+        home network, for tinkering or remote support. Leave it off unless
+        you need it.</p>
+      <dl class="kv">
+        <div><dt>Status</dt><dd id="ssh-state">—</dd></div>
+      </dl>
+      <div id="ssh-enable" hidden>
+        <label>Choose a login password to turn it on
+          <span class="manual-row">
+            <input type="password" id="ssh-pw" placeholder="At least 8 characters"
+                   autocomplete="new-password">
+            <button id="ssh-on" type="button">Turn on</button>
+          </span>
+        </label>
+      </div>
+      <div class="actions" id="ssh-disable" hidden>
+        <button id="ssh-off" type="button">Turn off SSH</button>
+      </div>
+      <p class="hint">Turning it on here is undone by a factory reset, so a
+        display that changes hands starts closed again.</p>
     </div>
 
     <div class="card">

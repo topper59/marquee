@@ -22,6 +22,7 @@ import marquee
 from marquee import update
 from marquee.config import RESTART_REQUIRED
 from marquee.display.state import DisplayMode
+from marquee.factoryreset import SSHD_DROPIN
 from marquee.netmgr import AP_IP, local_ip, wifi_mac
 from marquee.plex import auth as plex_auth
 from marquee.plex.discovery import gdm_discover, probe_server
@@ -61,6 +62,12 @@ def _set_path(d, path, value):
     for part in parts[:-1]:
         d = d[part]
     d[parts[-1]] = value
+
+
+def _ssh_active() -> bool:
+    out = subprocess.run(["systemctl", "is-active", "ssh"],
+                         capture_output=True, text=True)
+    return out.stdout.strip() == "active"
 
 
 def create_app(config, state, netmgr=None, updater=None) -> Flask:
@@ -181,6 +188,10 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             "device": cfg["device"]["name"],
             "version": marquee.__version__,
             "provisioned": cfg["provisioned"],
+            # Set by apt when a security update (kernel, libc) wants a
+            # reboot; the Device page offers the restart, never forces it.
+            "reboot_required": os.path.exists("/var/run/reboot-required"),
+            "ssh_active": _ssh_active(),
             "plex_url": cfg["plex"]["url"],
             "sessions": sessions,
             "dim": dim,
@@ -473,6 +484,54 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
         update.write_result("installing", marquee.__version__, version)
         update.schedule_apply()
         return jsonify({"ok": True, "version": version})
+
+    @app.post("/api/ssh")
+    def set_ssh():
+        """Toggle the sshd service. Turning it on requires choosing a root
+        password first — shipping a fleet that shares any default credential
+        is the one classic IoT mistake this page must make impossible."""
+        body = request.get_json(silent=True) or {}
+        enable = bool(body.get("enabled"))
+        try:
+            if enable:
+                pw = str(body.get("password") or "")
+                if len(pw) < 8:
+                    return jsonify({"error": "pick a password of at least 8 "
+                                             "characters"}), 400
+                # Via systemd-run: the service's own CapabilityBoundingSet
+                # is too tight for chpasswd's shadow-file replacement. The
+                # password goes through stdin, never argv.
+                res = subprocess.run(
+                    ["systemd-run", "--quiet", "--wait", "--pipe",
+                     "--collect", "chpasswd"],
+                    input=f"root:{pw}", text=True, capture_output=True,
+                    timeout=30)
+                if res.returncode != 0:
+                    raise subprocess.CalledProcessError(
+                        res.returncode, "chpasswd", stderr=res.stderr)
+                os.makedirs(os.path.dirname(SSHD_DROPIN), exist_ok=True)
+                with open(SSHD_DROPIN, "w") as f:
+                    f.write("# Written by the Marquee settings page "
+                            "(SSH toggle).\nPermitRootLogin yes\n")
+                subprocess.run(["systemctl", "enable", "--now", "ssh"],
+                               check=True, timeout=30)
+                log.warning("SSH enabled from the web UI")
+            else:
+                subprocess.run(["systemctl", "disable", "--now", "ssh"],
+                               check=True, timeout=30)
+                log.warning("SSH disabled from the web UI")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                OSError) as e:
+            return jsonify({"error": f"could not change SSH state: {e}"}), 500
+        return jsonify({"ok": True, "enabled": enable})
+
+    @app.post("/api/reboot")
+    def reboot():
+        """Full OS reboot — what a kernel security update needs; the app
+        restart below is not enough for that."""
+        subprocess.Popen(["systemd-run", "--collect", "--on-active=2",
+                          "systemctl", "reboot"])
+        return jsonify({"ok": True})
 
     @app.post("/api/restart")
     def restart():

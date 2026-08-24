@@ -1,0 +1,16 @@
+// Marquee overrides for unattended-upgrades.
+//
+// Security patches only: the app updates through its own signed-bundle
+// channel, and kernel/firmware jumps ship as new images — this exists so a
+// display that sits on a shelf for years still gets libssl fixes.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+
+// Never reboot on its own: a display restarting mid-movie is a support
+// ticket. The app notices /var/run/reboot-required and offers the restart
+// on the settings page instead.
+Unattended-Upgrade::Automatic-Reboot "false";
+
+// A half-applied update on a power cut must not wedge apt forever.
+Unattended-Upgrade::MinimalSteps "true";

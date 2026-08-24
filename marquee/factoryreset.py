@@ -34,6 +34,11 @@ from marquee.netmgr import AP_CON, STATION_CON
 
 log = logging.getLogger(__name__)
 
+# Written by the settings page when SSH is turned on there. Its presence is
+# how a reset knows SSH was enabled through the UI (and should be turned off
+# again) rather than set up by hand on a dev machine (and left alone).
+SSHD_DROPIN = "/etc/ssh/sshd_config.d/20-marquee.conf"
+
 
 def reset(config_path: str = None, keep_wifi: bool = False,
           restart: bool = True) -> None:
@@ -45,6 +50,19 @@ def reset(config_path: str = None, keep_wifi: bool = False,
         log.info("Removed %s", path)
     except OSError:
         pass
+
+    # Out-of-box means SSH off — but only when the settings page enabled it
+    # (the drop-in is its receipt). A dev box with hand-configured SSH and
+    # no drop-in keeps its access, which is also what makes reset tests
+    # safe to run over SSH.
+    if os.path.exists(SSHD_DROPIN):
+        try:
+            os.remove(SSHD_DROPIN)
+            subprocess.run(["systemctl", "disable", "--now", "ssh"],
+                           capture_output=True, timeout=30)
+            log.info("Disabled the web-enabled SSH access")
+        except (OSError, subprocess.SubprocessError) as e:
+            log.error("Could not disable SSH: %s", e)
 
     if keep_wifi:
         log.info("Keeping WiFi profiles (--keep-wifi)")

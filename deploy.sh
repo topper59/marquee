@@ -39,11 +39,18 @@ if [ "$push_deps" = 1 ]; then
 fi
 
 if [ "$push_unit" = 1 ]; then
-  echo "→ pushing unit + captive dnsmasq conf"
+  echo "→ pushing unit + captive dnsmasq conf + firewall + apt policy"
   scp -o ConnectTimeout=25 pi/etc/marquee.service "$PI":/etc/systemd/system/marquee.service
   $SSH "$PI" 'mkdir -p /etc/NetworkManager/dnsmasq-shared.d'
   scp -o ConnectTimeout=25 pi/etc/captive-dnsmasq.conf "$PI":/etc/NetworkManager/dnsmasq-shared.d/captive.conf
-  $SSH "$PI" 'systemctl daemon-reload'
+  scp -o ConnectTimeout=25 pi/etc/nftables.conf "$PI":/etc/nftables.conf
+  scp -o ConnectTimeout=25 pi/etc/20auto-upgrades "$PI":/etc/apt/apt.conf.d/20auto-upgrades
+  scp -o ConnectTimeout=25 pi/etc/52marquee-upgrades "$PI":/etc/apt/apt.conf.d/52marquee-upgrades
+  # -c first: a ruleset that does not parse must never reach a device whose
+  # only link is the interface it filters.
+  $SSH "$PI" 'nft -c -f /etc/nftables.conf \
+    && systemctl enable nftables && systemctl reload-or-restart nftables \
+    && systemctl daemon-reload'
 fi
 
 echo "→ restarting"
