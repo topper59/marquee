@@ -44,6 +44,11 @@ jobs:
           stage-list: stage0 stage1 stage2 ./image/stage-marquee
           hostname: marquee
           username: marquee
+          # Scaffolding account, required by pi-gen: SSH ships disabled and
+          # the firewall drops everything but the web UI, so this password
+          # only means something to someone already holding the hardware —
+          # and the SD card slides out anyway.
+          password: marquee
           disable-first-boot-user-rename: 1
           enable-ssh: 0
           locale: en_US.UTF-8
