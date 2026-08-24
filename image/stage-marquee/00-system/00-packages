@@ -9,3 +9,4 @@ python3-venv
 pkg-config
 cmake
 ninja-build
+python3-pil
