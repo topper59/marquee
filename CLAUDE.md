@@ -125,6 +125,45 @@ it with the shipped verifier, tags, `gh release create`). `release/build.py
 --keygen` is one-time and refuses to overwrite — a new key orphans every
 device in the field.
 
+### OS updates, firewall, SSH toggle
+
+`pi/etc/20auto-upgrades` + `52marquee-upgrades` run unattended-upgrades on
+the **Debian security origin only**, never auto-rebooting: the app watches
+`/var/run/reboot-required` (`/api/status: reboot_required`) and the Device
+page offers a full reboot (`POST /api/reboot` — distinct from the app
+restart, which a kernel update ignores).
+
+`pi/etc/nftables.conf` is default-drop input: 80, mDNS, DHCP client, and
+53/67 for the AP-mode captive portal (harmless in station mode — nothing
+listens). **Port 22 is open at the firewall on purpose**; SSH availability
+is the sshd *service*. The settings Remote-access card toggles it
+(`POST /api/ssh`): enabling requires choosing a root password, set via
+`systemd-run --pipe chpasswd` because the unit's CapabilityBoundingSet is
+too tight for the shadow rewrite (password via stdin, never argv), and
+writes `/etc/ssh/sshd_config.d/20-marquee.conf` as a receipt. Factory reset
+disables SSH **only when that receipt exists** — this dev Pi's
+hand-configured SSH has no receipt, which is what keeps reset tests safe to
+run over SSH. Never create that drop-in on the dev device.
+
+Changing the firewall: `deploy.sh --unit` pushes and applies it (after
+`nft -c`), but test a rule change behind a dead-man first:
+`systemd-run --on-active=120 --unit=nft-revert nft flush ruleset`, confirm a
+NEW ssh connection works, then stop the timer. Established connections
+survive a bad ruleset; new ones are the test.
+
+### SD-card image (image/, GitHub Actions)
+
+`.github/workflows/build-image.yml` builds a flashable Raspberry Pi OS Lite
+image with pi-gen on every published release (and on demand); the
+`image/stage-marquee` stage installs the app **in the updater's layout**
+(`versions/<v>` + symlink), builds rgbmatrix from source into the venv, and
+applies the same `pi/etc/` files the dev deploy uses — the workflow copies
+them in so image and dev device cannot drift. SSH is off in the image, the
+journal capped, onboard audio off (the matrix needs its PWM), `isolcpus=3`
+matching the unit's `CPUAffinity`. No secrets in CI: the image carries only
+the update public key. WiFi regulatory domain is baked as US — revisit
+before selling abroad.
+
 ### Factory reset without the button
 
 `marquee/factoryreset.py` is the shared implementation (the GPIO hold path
