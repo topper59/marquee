@@ -32,6 +32,13 @@ jobs:
           find image/stage-marquee/01-app/files/marquee -name '__pycache__' -type d -exec rm -rf {} +
           cp requirements.txt image/stage-marquee/01-app/files/
 
+      # The runner is x86; pi-gen's chroot is arm64 and needs binfmt_misc
+      # handlers registered before the build container starts.
+      - name: Set up QEMU for arm64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Build image
         id: build
         uses: usimd/pi-gen-action@v1
