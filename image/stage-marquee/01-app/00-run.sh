@@ -19,7 +19,6 @@ git clone --depth 1 https://github.com/hzeller/rpi-rgb-led-matrix.git /opt/rpi-r
 python3 -m venv /opt/marquee/venv
 /opt/marquee/venv/bin/pip install --upgrade pip setuptools wheel cython
 /opt/marquee/venv/bin/pip install -r /opt/marquee/requirements.txt
-cd /opt/rpi-rgb-led-matrix
-make build-python PYTHON=/opt/marquee/venv/bin/python
-make install-python PYTHON=/opt/marquee/venv/bin/python
+make -C /opt/rpi-rgb-led-matrix/bindings/python build-python PYTHON=/opt/marquee/venv/bin/python
+make -C /opt/rpi-rgb-led-matrix/bindings/python install-python PYTHON=/opt/marquee/venv/bin/python
 EOF
