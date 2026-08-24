@@ -23,10 +23,17 @@ echo "→ syntax check"
 python3 -m compileall -q marquee tests
 
 echo "→ pushing package"
+# /opt/marquee/marquee is a symlink into versions/<v> so the updater can swap
+# releases atomically (see marquee/update.py). A dev push is just another
+# version, named "dev"; the updater never prunes it.
+$SSH "$PI" 'mkdir -p /opt/marquee/versions/dev'
 rsync -a --delete --exclude '__pycache__' -e "ssh -o ConnectTimeout=25" \
-  marquee/ "$PI":/opt/marquee/marquee/
+  marquee/ "$PI":/opt/marquee/versions/dev/marquee/
 rsync -a --exclude '__pycache__' -e "ssh -o ConnectTimeout=25" \
   tests requirements.txt "$PI":/opt/marquee/
+$SSH "$PI" 'cd /opt/marquee && cp requirements.txt versions/dev/requirements.txt \
+  && if [ ! -L marquee ]; then rm -rf marquee; fi \
+  && ln -sfn versions/dev/marquee marquee'
 
 if [ "$push_deps" = 1 ]; then
   echo "→ installing deps"

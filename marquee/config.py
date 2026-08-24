@@ -166,6 +166,15 @@ def defaults() -> dict:
             "ipv4_gateway": "",
             "ipv4_dns": "",
         },
+        "updates": {
+            # Ask GitHub about new releases once a day. The check itself is
+            # the only phone-home this device has; off means updates arrive
+            # only by file upload.
+            "auto_check": True,
+            # Opt-in: install a found update overnight (03:00–05:00) instead
+            # of waiting for someone to press the button.
+            "auto_install": False,
+        },
         "web": {
             "enabled": True,
             "port": 80,
@@ -385,6 +394,8 @@ _VALIDATORS = {
     "network.ipv4_prefix":        _int_range(1, 32),
     "network.ipv4_gateway":       _ipv4,
     "network.ipv4_dns":           _ipv4_list,
+    "updates.auto_check":         _as_bool,
+    "updates.auto_install":       _as_bool,
     "web.enabled":                _as_bool,
     "web.port":                   _int_range(1, 65535),
     "web.password":               lambda v: None if v in (None, "") else str(v),

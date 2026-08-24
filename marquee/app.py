@@ -48,11 +48,15 @@ def main():
     from marquee.resetbtn import ResetButton
     ResetButton(config, state, stop, netmgr).start()
 
+    from marquee.update import Updater
+    updater = Updater(config, stop)
+    updater.start()
+
     web_server = None
     if cfg["web"]["enabled"]:
         try:
             from marquee.web.server import start_web
-            web_server = start_web(config, state, netmgr)
+            web_server = start_web(config, state, netmgr, updater)
         except Exception:
             # The panel must keep working even if the web UI cannot start
             # (port taken, missing dependency, …).

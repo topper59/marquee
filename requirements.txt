@@ -3,3 +3,5 @@
 requests>=2.32
 Pillow>=11
 flask>=3.0
+# Ed25519 signature verification for signed update bundles (marquee/update.py)
+cryptography>=42

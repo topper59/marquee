@@ -1082,6 +1082,183 @@ for bad_t in ("7", "07:60", "24:00", "a:b", ""):
         ok = True
     check(f"rejects {bad_t!r}", ok)
 
+print("update bundles")
+
+import io  # noqa: E402
+import tarfile  # noqa: E402
+import marquee.update as update  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: E402
+    Ed25519PrivateKey,
+)
+
+check("versions compare numerically, not textually",
+      update.is_newer("1.2.10", "1.2.9") and not update.is_newer("1.2.3", "1.2.10"))
+check("v-prefix is accepted", update.is_newer("v2.0.0", "1.9.9"))
+for bad_v in ("beta", "1.2.x", ""):
+    try:
+        update.parse_version(bad_v)
+        ok = False
+    except ValueError:
+        ok = True
+    check(f"rejects version {bad_v!r}", ok)
+
+
+def make_bundle(tmp, version="9.9.9", product="marquee", key=None,
+                extra_member=None, tamper=False, sign_key=None):
+    """A miniature but structurally complete bundle, signed with a test key."""
+    key = key or Ed25519PrivateKey.generate()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        def add(name, data):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        add("manifest.json", json.dumps(
+            {"product": product, "version": version}).encode())
+        add("requirements.txt", b"flask>=3.0\n")
+        add("marquee/__init__.py",
+            f'__version__ = "{version}"\n'.encode())
+        if extra_member:
+            add(extra_member, b"#!/bin/sh\n")
+    payload = buf.getvalue()
+    sig = (sign_key or key).sign(payload)
+    if tamper:
+        payload = payload[:-1] + bytes([payload[-1] ^ 1])
+    path = os.path.join(tmp, "test.mqup")
+    with tarfile.open(path, "w") as tar:
+        for name, data in (("payload.tar.gz", payload), ("payload.sig", sig)):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return path, key.public_key().public_bytes_raw().hex()
+
+
+with tempfile.TemporaryDirectory() as d:
+    path, pub = make_bundle(d)
+    check("a signed bundle verifies",
+          update.verify_bundle(path, pub)["version"] == "9.9.9")
+
+    path, pub = make_bundle(d, tamper=True)
+    try:
+        update.verify_bundle(path, pub)
+        ok = False
+    except update.UpdateError:
+        ok = True
+    check("a tampered payload is refused", ok)
+
+    other = Ed25519PrivateKey.generate()
+    path, pub = make_bundle(d, sign_key=other)
+    try:
+        update.verify_bundle(path, pub)
+        ok = False
+    except update.UpdateError:
+        ok = True
+    check("a bundle signed with the wrong key is refused", ok)
+
+    path, pub = make_bundle(d, product="other-thing")
+    try:
+        update.verify_bundle(path, pub)
+        ok = False
+    except update.UpdateError:
+        ok = True
+    check("another product's bundle is refused", ok)
+
+    path, pub = make_bundle(d, extra_member="evil.sh")
+    try:
+        update.verify_bundle(path, pub)
+        ok = False
+    except update.UpdateError:
+        ok = True
+    check("a payload with a stray file is refused", ok)
+
+    path, pub = make_bundle(d, version="not.a.version")
+    try:
+        update.verify_bundle(path, pub)
+        ok = False
+    except update.UpdateError:
+        ok = True
+    check("an unparsable version is refused", ok)
+
+    with open(os.path.join(d, "junk.mqup"), "wb") as f:
+        f.write(b"MZ this is not a tar at all")
+    try:
+        update.verify_bundle(os.path.join(d, "junk.mqup"), pub)
+        ok = False
+    except update.UpdateError:
+        ok = True
+    check("a non-tar file is refused, not crashed on", ok)
+
+print("update checker")
+
+with tempfile.TemporaryDirectory() as d:
+    update.STATE_DIR = d
+    update.RESULT_PATH = os.path.join(d, "last_result.json")
+    update.write_result("rolled_back", "1.0.0", "1.1.0", "boom")
+    r = update.read_result()
+    check("a result survives the round trip",
+          r["status"] == "rolled_back" and r["to"] == "1.1.0")
+
+    class FakeResp:
+        def __init__(self, doc):
+            self.doc = doc
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.doc
+
+    class FakeRequests:
+        doc = {}
+
+        @staticmethod
+        def get(url, **kw):
+            if isinstance(FakeRequests.doc, Exception):
+                raise FakeRequests.doc
+            return FakeResp(FakeRequests.doc)
+
+    real_requests = sys.modules.get("requests")
+    sys.modules["requests"] = FakeRequests
+    real_repo = update.UPDATE_REPO
+    update.UPDATE_REPO = "someone/marquee"
+    try:
+        up = update.Updater(None, threading.Event())
+
+        FakeRequests.doc = {
+            "tag_name": "v9.9.9",
+            "body": "notes",
+            "assets": [{"name": "marquee-9.9.9.mqup",
+                        "browser_download_url": "https://x/marquee-9.9.9.mqup"}],
+        }
+        st = up.check_now()
+        check("a newer release is offered",
+              st["available"] and st["available"]["version"] == "9.9.9")
+
+        FakeRequests.doc = {"tag_name": "v0.0.1", "assets": [
+            {"name": "marquee-0.0.1.mqup", "browser_download_url": "u"}]}
+        st = up.check_now()
+        check("an older release is not", st["available"] is None)
+
+        FakeRequests.doc = {"tag_name": "v9.9.9", "assets": [
+            {"name": "notes.txt", "browser_download_url": "u"}]}
+        st = up.check_now()
+        check("a release without a bundle asset is not", st["available"] is None)
+
+        FakeRequests.doc = {"tag_name": "beta", "assets": [
+            {"name": "marquee-x.mqup", "browser_download_url": "u"}]}
+        st = up.check_now()
+        check("an unparsable tag is not an offer", st["available"] is None)
+
+        FakeRequests.doc = OSError("no route to host")
+        st = up.check_now()
+        check("a failed check reports instead of raising",
+              "could not check" in st["check_error"])
+        check("and clears nothing it did not learn", st["available"] is None)
+    finally:
+        update.UPDATE_REPO = real_repo
+        if real_requests is not None:
+            sys.modules["requests"] = real_requests
+
 print()
 if failures:
     print(f"{failures} FAILED")

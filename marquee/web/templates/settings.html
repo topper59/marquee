@@ -24,6 +24,8 @@
         <span class="sub" id="menu-ha-sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#network"><span class="icon">📶</span>Network
         <span class="sub" id="menu-network-sub"></span><span class="chev">›</span></a></li>
+      <li><a class="navrow" href="#updates"><span class="icon">⬆️</span>Software update
+        <span class="sub" id="menu-updates-sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#device"><span class="icon">⚙️</span>Device
         <span class="sub" id="menu-device-sub"></span><span class="chev">›</span></a></li>
     </ul>
@@ -313,6 +315,62 @@
           address, or at <b>http://marquee.local</b>. If the address does not
           work, the display puts itself back on automatic (DHCP) by itself.</p>
       </div>
+    </div>
+  </section>
+
+  <section class="page" id="sec-updates" hidden>
+    <a class="backlink" href="#">‹ Settings</a>
+    <div class="card">
+      <h2>Software update</h2>
+      <dl class="kv">
+        <div><dt>Installed version</dt><dd id="upd-current">—</dd></div>
+      </dl>
+      <p class="hint" id="upd-status">—</p>
+      <p class="hint warn" id="upd-result" hidden></p>
+
+      <div id="upd-available" hidden>
+        <p><b id="upd-avail-version"></b> is available.</p>
+        <p class="hint" id="upd-notes" hidden></p>
+        <button id="upd-install" type="button" class="primary">Download and
+          install</button>
+      </div>
+      <div class="actions">
+        <button id="upd-check" type="button">Check now</button>
+      </div>
+      <p class="hint">Installing takes about a minute; the panel restarts
+        during it. If the new version fails to start, the display puts the
+        old one back by itself.</p>
+
+      <label class="check">
+        <input type="checkbox" data-path="updates.auto_check"> Check for
+        updates automatically
+      </label>
+      <p class="hint">Once a day, the display asks GitHub whether a new
+        version exists — nothing is installed without you. This is the only
+        thing the display ever "phones home" for; turn it off and updates
+        arrive only through the file upload below.</p>
+      <label class="check">
+        <input type="checkbox" data-path="updates.auto_install"> Install
+        updates automatically overnight
+      </label>
+      <p class="hint">Installs a found update between 3 and 5 in the
+        morning. If an install fails, that version is not retried — check
+        this page.</p>
+    </div>
+
+    <div class="card">
+      <h2>Install from a file</h2>
+      <p class="hint">For displays kept off the internet: download the
+        <code>.mqup</code> file from the Marquee releases page on another
+        device, then upload it here. The file is signature-checked before
+        anything is installed, so a modified or corrupted file is refused.</p>
+      <label>Update file
+        <input type="file" id="upd-file" accept=".mqup">
+      </label>
+      <div class="actions">
+        <button id="upd-upload" type="button">Verify and install</button>
+      </div>
+      <p class="hint" id="upd-file-msg" hidden></p>
     </div>
   </section>
 

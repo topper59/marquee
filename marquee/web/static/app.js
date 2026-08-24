@@ -9,10 +9,11 @@ const RESTART_NOTE = $("#restart-note").textContent;
    across sections meant a change you could no longer see — a static IP, say —
    riding along with an unrelated one, and any error landing on a page you had
    already left. */
-const SECTIONS = ["plex", "filters", "display", "ha", "network", "device"];
+const SECTIONS = ["plex", "filters", "display", "ha", "network", "updates", "device"];
 const SECTION_NAMES = {
   plex: "Plex server", filters: "What to show", display: "Display",
-  ha: "Home Assistant", network: "Network", device: "Device",
+  ha: "Home Assistant", network: "Network", updates: "Software update",
+  device: "Device",
 };
 
 let currentSection = "";
@@ -440,8 +441,130 @@ $("#pw-clear").addEventListener("click", () => {
 });
 showPasswordState().catch(() => {});
 
+/* ── Software updates ─────────────────────────────────────────────────────
+   Both install paths (GitHub download, file upload) end in the same
+   POST /api/update/apply; the page's only job after that is to say what is
+   happening and reload once the service has restarted into the new version
+   — or rolled back, which the status text reports on the next load. */
+function updateResultText(r) {
+  if (!r || !r.status) return "";
+  if (r.status === "updated") return `Updated ${r.from} → ${r.to}.`;
+  if (r.status === "installing") return `An update to ${r.to} is installing…`;
+  if (r.status === "rolled_back")
+    return `Update to ${r.to} failed to start, so ${r.from} was put back. ` +
+           (r.error || "");
+  if (r.status === "failed")
+    return `Update${r.to ? " to " + r.to : ""} failed: ${r.error || ""}`;
+  return "";
+}
+
+async function loadUpdateStatus() {
+  try {
+    const st = await (await fetch("/api/update/status")).json();
+    $("#upd-current").textContent = st.current;
+    const avail = st.available;
+    $("#upd-available").hidden = !avail;
+    if (avail) {
+      $("#upd-avail-version").textContent = "Marquee " + avail.version;
+      $("#upd-notes").textContent = avail.notes || "";
+      $("#upd-notes").hidden = !avail.notes;
+    }
+    $("#menu-updates-sub").textContent =
+      avail ? `${avail.version} available` : "Up to date";
+    $("#upd-status").textContent = st.check_error ? st.check_error
+      : !st.last_check ? "Not checked for updates yet."
+      : avail ? "A new version is ready to install."
+      : "You are on the latest version.";
+    // Outcomes go stale: an "updated" line from months ago is just noise.
+    const r = st.last_result;
+    const fresh = r && r.time && (Date.now() / 1000 - r.time) < 7 * 86400;
+    const text = fresh ? updateResultText(r) : "";
+    $("#upd-result").textContent = text;
+    $("#upd-result").hidden = !text;
+  } catch { /* section just stays blank */ }
+}
+
+function updateInstalling(version) {
+  clearInterval(statusTimer);
+  $("#restart-note").hidden = false;
+  $("#restart-note").textContent =
+    `Installing Marquee ${version}… the display restarts, and this page ` +
+    `reloads in about a minute. If the new version fails to start, the ` +
+    `previous one is restored automatically.`;
+  toast(`Installing Marquee ${version}…`);
+  setTimeout(() => location.reload(), 75000);
+}
+
+async function applyUpdate() {
+  const res = await fetch("/api/update/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  });
+  const out = await res.json();
+  if (!res.ok) { toast(out.error || "Install failed", true); return; }
+  updateInstalling(out.version);
+}
+
+$("#upd-check").addEventListener("click", async () => {
+  const btn = $("#upd-check");
+  btn.disabled = true;
+  $("#upd-status").textContent = "Checking…";
+  try { await fetch("/api/update/check", { method: "POST" }); } catch { }
+  btn.disabled = false;
+  loadUpdateStatus();
+});
+
+$("#upd-install").addEventListener("click", async () => {
+  const v = $("#upd-avail-version").textContent.replace("Marquee ", "");
+  if (!confirm(`Download and install Marquee ${v}?\n\nThe display restarts ` +
+               `during the install and is dark for about a minute.`)) return;
+  const btn = $("#upd-install");
+  btn.disabled = true;
+  btn.textContent = "Downloading…";
+  try {
+    const res = await fetch("/api/update/download", { method: "POST" });
+    const out = await res.json();
+    if (!res.ok) { toast(out.error || "Download failed", true); return; }
+    btn.textContent = "Installing…";
+    await applyUpdate();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Download and install";
+  }
+});
+
+$("#upd-upload").addEventListener("click", async () => {
+  const f = $("#upd-file").files[0];
+  const msg = $("#upd-file-msg");
+  if (!f) { toast("Choose a .mqup file first", true); return; }
+  msg.hidden = false;
+  msg.textContent = "Uploading and checking the file…";
+  const fd = new FormData();
+  fd.append("file", f);
+  let res, out;
+  try {
+    res = await fetch("/api/update/upload", { method: "POST", body: fd });
+    out = await res.json();
+  } catch {
+    msg.textContent = "The upload did not go through — try again.";
+    return;
+  }
+  if (!res.ok) { msg.textContent = out.error || "Upload failed."; return; }
+  if (!out.newer) {
+    msg.textContent = `This file is Marquee ${out.version}, which is not ` +
+                      `newer than the installed ${out.current}.`;
+    return;
+  }
+  msg.textContent = `Verified: Marquee ${out.version}.`;
+  if (!confirm(`Install Marquee ${out.version}?\n\nThe display restarts ` +
+               `during the install and is dark for about a minute.`)) return;
+  await applyUpdate();
+});
+
 navigate();
 loadSettings().catch(() => toast("Could not load settings", true));
+loadUpdateStatus();
 showCurrentServer().catch(() => {});
 loadStatus();
 const statusTimer = setInterval(loadStatus, 10000);

@@ -19,6 +19,7 @@ from flask import Flask, jsonify, request, render_template, session
 from flask import redirect
 
 import marquee
+from marquee import update
 from marquee.config import RESTART_REQUIRED
 from marquee.display.state import DisplayMode
 from marquee.netmgr import AP_IP, local_ip, wifi_mac
@@ -62,11 +63,13 @@ def _set_path(d, path, value):
     d[parts[-1]] = value
 
 
-def create_app(config, state, netmgr=None) -> Flask:
+def create_app(config, state, netmgr=None, updater=None) -> Flask:
     app = Flask(__name__)
     # Sessions only carry the "authed" flag; a fresh key per process simply
     # re-asks for the password after a restart.
     app.secret_key = secrets.token_hex(32)
+    # Update bundles arrive as one multipart upload.
+    app.config["MAX_CONTENT_LENGTH"] = update.MAX_BUNDLE_BYTES
 
     def in_ap_mode() -> bool:
         return netmgr is not None and netmgr.in_ap_mode()
@@ -392,6 +395,85 @@ def create_app(config, state, netmgr=None) -> Flask:
             "reconnect_to": "http://marquee.local/" if keep_wifi else "",
         })
 
+    # ── Software updates ──────────────────────────────────────────────────
+    # Both delivery paths (GitHub download, file upload) land the same signed
+    # bundle at update.PENDING; /api/update/apply is the single install path
+    # after that. The signature check in update.verify_bundle is the real
+    # gate — an upload endpoint that becomes root-run code must never trust
+    # the transport it arrived on.
+    def _updater_or_503():
+        if updater is None:
+            return jsonify({"error": "updates are not available"}), 503
+        return None
+
+    @app.get("/api/update/status")
+    def update_status():
+        return _updater_or_503() or jsonify(updater.status())
+
+    @app.post("/api/update/check")
+    def update_check():
+        return _updater_or_503() or jsonify(updater.check_now())
+
+    @app.post("/api/update/download")
+    def update_download():
+        err = _updater_or_503()
+        if err:
+            return err
+        try:
+            manifest = updater.download_pending()
+        except update.UpdateError as e:
+            return jsonify({"error": str(e)}), 502
+        except ImportError:
+            return jsonify({"error": "update support is missing the "
+                                     "cryptography package"}), 500
+        return jsonify({"ok": True, "version": manifest["version"]})
+
+    @app.post("/api/update/upload")
+    def update_upload():
+        f = request.files.get("file")
+        if f is None:
+            return jsonify({"error": "no file in the upload"}), 400
+        os.makedirs(update.STATE_DIR, exist_ok=True)
+        tmp = update.PENDING + ".part"
+        f.save(tmp)
+        try:
+            manifest = update.verify_bundle(tmp)
+        except update.UpdateError as e:
+            os.unlink(tmp)
+            return jsonify({"error": str(e)}), 400
+        except ImportError:
+            os.unlink(tmp)
+            return jsonify({"error": "update support is missing the "
+                                     "cryptography package"}), 500
+        os.replace(tmp, update.PENDING)
+        version = manifest["version"]
+        return jsonify({
+            "ok": True,
+            "version": version,
+            "current": marquee.__version__,
+            "newer": update.is_newer(version, marquee.__version__),
+        })
+
+    @app.post("/api/update/apply")
+    def update_apply():
+        """Install the verified pending bundle. Detached, like restart and
+        factory reset: the applier restarts this very service."""
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") is not True:
+            return jsonify({"error": "confirmation required"}), 400
+        try:
+            manifest = update.verify_bundle(update.PENDING)
+        except (update.UpdateError, ImportError, OSError) as e:
+            return jsonify({"error": f"no installable update is waiting ({e})"}), 400
+        version = manifest["version"]
+        if not update.is_newer(version, marquee.__version__):
+            return jsonify({"error": f"{version} is not newer than the "
+                                     f"installed {marquee.__version__}"}), 400
+        log.info("Installing update %s from the web UI", version)
+        update.write_result("installing", marquee.__version__, version)
+        update.schedule_apply()
+        return jsonify({"ok": True, "version": version})
+
     @app.post("/api/restart")
     def restart():
         # systemd-run detaches the restart from this process, so the HTTP
@@ -403,11 +485,11 @@ def create_app(config, state, netmgr=None) -> Flask:
     return app
 
 
-def start_web(config, state, netmgr=None):
+def start_web(config, state, netmgr=None, updater=None):
     """Start the web server thread. Returns the server (call .shutdown())."""
     from werkzeug.serving import make_server
 
-    app = create_app(config, state, netmgr)
+    app = create_app(config, state, netmgr, updater)
     port = config.get()["web"]["port"]
     server = make_server("0.0.0.0", port, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True, name="web").start()
