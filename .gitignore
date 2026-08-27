@@ -4,3 +4,4 @@ node_modules/
 dist/
 release/.venv/
 image/stage-marquee/*/files/
+.DS_Store
