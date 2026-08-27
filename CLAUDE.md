@@ -402,8 +402,16 @@ time.
   - `load_pil_title_font()` returns None if the BDF will not compile, and the
     scroll branch falls back to whole-pixel `DrawText`. Keep that fallback:
     it is the difference between a slightly chunkier title and a blank half.
-  - The box filter has to conserve ink or the title visibly pulses in
-    brightness as it slides. The smoke test asserts <2% spread across phases.
+  - What the box filter produces is *coverage*, and coverage is not a panel
+    value: the matrix library luminance-corrects every byte through CIE1931
+    before the PWM sees it, so a stem split across two columns at 128/128 emits
+    **37%** of the light the same stem emits on a whole pixel at 255. At
+    40px/s a stem crosses a boundary about twenty times a second, which is
+    what made a fast scroll pulse. `_COVERAGE_LUT` inverts that curve
+    (framebuffer.cc's table, toe included) before the colorize, so partial
+    columns come out as bright as whole ones. The smoke test asserts <2%
+    spread in *emitted light* across phases — summing 8-bit values instead
+    would have called the pulsing version conserved, and did.
 - Panel timing was measured and is **not** the lever: `gpio_slowdown` 2 is
   marginally *worse* than the configured 4 (8.60 vs 8.14ms), `pwm_bits` 9
   buys only 6% refresh over 11 and costs two bits of depth, and

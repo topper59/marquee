@@ -147,6 +147,35 @@ def make_paused_poster(img: Image.Image) -> Image.Image:
     return out
 
 
+def _coverage_lut() -> list:
+    """Map linear coverage 0..255 onto the panel value that emits it.
+
+    The box filter in make_title_phases produces *coverage*: an edge covering
+    40% of a column comes out at 0.4. Sending 0.4 straight to the panel is
+    wrong, because the matrix library luminance-corrects every 8-bit value
+    through the CIE1931 curve before it reaches the PWM. Two half-lit columns
+    therefore emit about 44% of the light one fully lit column does, and a
+    glyph stem visibly dims every time it slides off a whole pixel — which at
+    40px/s is some twenty times a second, and is exactly the pulsing this
+    undoes.
+
+    So invert the curve the library is about to apply, and light comes out
+    linear in coverage again. The colorize below scales the whole ramp by
+    TITLE_FG, a constant factor, so it leaves the proportion intact.
+    """
+    lut = []
+    for i in range(256):
+        y = i / 255
+        # Inverse of rgb-led-matrix's CIE1931 luminance table (framebuffer.cc):
+        # y = x/902.3 below the toe, ((x + 16)/116)**3 above it, x in 0..100.
+        x = y * 902.3 if y <= 8 / 902.3 else 116 * (y ** (1 / 3)) - 16
+        lut.append(min(255, max(0, round(x / 100 * 255))))
+    return lut
+
+
+_COVERAGE_LUT = _coverage_lut()
+
+
 def make_title_phases(text: str, pil_font, height: int,
                       color: tuple = TITLE_FG) -> list:
     """`text` pre-rendered at each horizontal sub-pixel phase.
@@ -156,7 +185,8 @@ def make_title_phases(text: str, pil_font, height: int,
     1px lurches. These are the same string sampled at 0, 1/N, 2/N … of a pixel
     to the right: the strip is supersampled N× horizontally and box-filtered
     back down, so a glyph edge falling between two panel columns lights both
-    in proportion and the motion reads as continuous.
+    in proportion and the motion reads as continuous. _COVERAGE_LUT is what
+    keeps that partial column as bright as the whole one it came from.
 
     Built once per title and cached on the Session, like make_paused_poster —
     about a millisecond here against 0.02ms per frame for the crop.
@@ -172,6 +202,10 @@ def make_title_phases(text: str, pil_font, height: int,
     for k in range(sub):
         window = wide.crop((k, 0, k + w * sub, height))
         mask   = window.resize((w, height), Image.BOX)
+        # Coverage out of the filter, panel values into SetImage — without
+        # this step the title pulses in brightness as it slides. See
+        # _coverage_lut.
+        mask   = mask.point(_COVERAGE_LUT)
         # Colorized here rather than per frame: SetImage wants RGB, and the
         # title colour never changes.
         phases.append(ImageOps.colorize(mask, (0, 0, 0), color))

@@ -932,11 +932,23 @@ if _pf is not None:
     check("no two phases are identical",
           len({p.tobytes() for p in phases}) == len(phases))
 
-    # A box filter that loses or gains ink would make the title pulse in
-    # brightness as it slides. Total coverage has to hold across phases.
-    ink = [sum(px[0] for px in p.convert("RGB").getdata()) for p in phases]
-    check("brightness is conserved across phases (<2% spread)",
-          (max(ink) - min(ink)) / max(ink) < 0.02)
+    # A phase that emits less light than its neighbours makes the title pulse
+    # as it slides, so what has to hold across phases is the *light*, not the
+    # 8-bit values: the panel library luminance-corrects everything it is
+    # handed, and summing coded values would call a pulsing title conserved.
+    def cie(v):
+        x = v / 255 * 100
+        return x / 902.3 if x <= 8 else ((x + 16) / 116) ** 3
+
+    light = [sum(cie(px[0]) for px in p.convert("RGB").getdata())
+             for p in phases]
+    check("emitted light is conserved across phases (<2% spread)",
+          (max(light) - min(light)) / max(light) < 0.02)
+    # And the correction is actually doing something — without it the split
+    # phases come out well over 2% dark, which is the bug this guards.
+    raw = [sum(px[0] for px in p.convert("RGB").getdata()) for p in phases]
+    check("partial phases carry more coded ink than the crisp one",
+          min(raw[1:]) > raw[0] * 1.02)
 
     # The addressing the render loop uses: whole pixels choose the window,
     # the fraction chooses the phase. Every offset in range must yield a
