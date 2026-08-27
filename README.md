@@ -2,6 +2,7 @@
 
 <img width="2081" height="1279" alt="image" src="https://github.com/user-attachments/assets/c85c6d93-5b13-4dd9-a1bd-6ceb2c2ae71c" />
 
+https://github.com/user-attachments/assets/95c3e3f0-16a0-438e-9ac2-e73b4c57d87b
 
 A now-playing display for Plex on a 128×64 HUB75 LED matrix, driven by a
 Raspberry Pi 4 with an Adafruit RGB Matrix Bonnet. One half of the panel is
