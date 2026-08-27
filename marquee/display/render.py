@@ -335,14 +335,24 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             stop.wait(0.5)
             continue
 
-        # ── Schedule gate ──────────────────────────────────────────────────
-        active = is_within_schedule(sched_start, sched_stop)
+        # ── Off gates ──────────────────────────────────────────────────────
+        # Two ways the panel goes dark: outside the display schedule, or Home
+        # Assistant reporting the TV on with ha.tv_action = "off". A theater
+        # room cannot use the dim brightness — any lit panel is a distraction
+        # in a dark room — so that case blanks rather than dims.
+        with state.lock:
+            ha_dim, ha_blank = state.dim, state.ha_blank
+        in_schedule = is_within_schedule(sched_start, sched_stop)
+        active = in_schedule and not ha_blank
         if not active:
             if was_active:
                 matrix.Clear()
-                log.info("Schedule: outside window, display off (%s–%s)",
-                         sched_start.strftime("%H:%M"),
-                         sched_stop.strftime("%H:%M"))
+                if in_schedule:
+                    log.info("Home Assistant: TV on, display off")
+                else:
+                    log.info("Schedule: outside window, display off (%s–%s)",
+                             sched_start.strftime("%H:%M"),
+                             sched_stop.strftime("%H:%M"))
             was_active = False
             # Sleep briefly while blanked — long enough to stop spinning at
             # 20fps, short enough that schedule edits apply promptly.
@@ -350,13 +360,11 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             continue
 
         if not was_active:
-            log.info("Schedule: inside window, display on")
+            log.info("Display on")
         was_active = True
 
         # ── Brightness ─────────────────────────────────────────────────────
         state.maybe_cycle(cycle_seconds)
-        with state.lock:
-            ha_dim = state.dim
         # Either source is enough. Home Assistant knows the TV is on; the dim
         # window is for the far more common case of no Home Assistant at all.
         should_dim = ha_dim or is_within_dim_window(dim_start, dim_stop)

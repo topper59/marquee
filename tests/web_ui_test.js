@@ -24,12 +24,12 @@ const CFG = {
              dim_start: "00:00", dim_stop: "00:00", accent: "#e5a00d",
              idle_mode: "clock", clock_24h: false, poster_side: "left",
              scroll_speed: "normal", show_user: true },
-  ha: { enabled: false, require_sunset: true, url: "", token: "", tv_entity: "" },
+  ha: { enabled: false, require_sunset: true, tv_action: "dim", url: "", token: "", tv_entity: "" },
   network: { ipv4_method: "auto", ipv4_address: "", ipv4_prefix: 24,
              ipv4_gateway: "", ipv4_dns: "" },
   log_level: "INFO",
 };
-const STATUS = { sessions: [], plex_offline: false,
+const STATUS = { sessions: [], plex_offline: false, ha_blank: false,
                  network: { status: "online", ip: "192.168.2.129",
                  ssid: "Wifi", mac: "DC:A6:32:02:9C:47", ipv4_method: "auto",
                  ipv4_error: "" } };
@@ -132,6 +132,27 @@ const edit = (path, value) => {
   const body = posted.find((p) => p.url === "/api/settings").body;
   check("posted the HA field", body["ha.require_sunset"] === false);
   check("posted nothing else", Object.keys(body).length === 1);
+
+  console.log("what the TV does to the panel is a choice");
+  check("the action loads", field("ha.tv_action").value === "dim");
+  edit("ha.tv_action", "off");
+  posted = [];
+  await w.__save();
+  const habody = posted.find((p) => p.url === "/api/settings").body;
+  check("the action posted", habody["ha.tv_action"] === "off");
+  check("and took nothing with it", Object.keys(habody).length === 1);
+  // The menu line reads the saved config, so drive it from there rather than
+  // from the field that was just posted.
+  CFG.ha.enabled = true; CFG.ha.tv_action = "off";
+  await w.__loadSettings(); await settle();
+  check("the menu says the panel goes off",
+        /panel off/.test($("#menu-ha-sub").textContent));
+  CFG.ha.tv_action = "dim";
+  await w.__loadSettings(); await settle();
+  check("and says it dims when that is the choice",
+        /dim/.test($("#menu-ha-sub").textContent));
+  CFG.ha.enabled = false;
+  await w.__loadSettings(); await settle();
 
   console.log("a change on another section never rides along");
   await settle();
@@ -344,6 +365,16 @@ const edit = (path, value) => {
   await w.__loadStatus(); await settle();
   check("the notice clears when it comes back", $("#np-offline").hidden);
   check("and the empty card goes away", $("#now-playing").hidden);
+
+  console.log("a panel blanked by Home Assistant says so");
+  STATUS.ha_blank = true;
+  await w.__loadStatus(); await settle();
+  check("the card comes up for it too", !$("#now-playing").hidden);
+  check("and blames the TV, not Plex",
+        !$("#np-panel-off").hidden && $("#np-offline").hidden);
+  STATUS.ha_blank = false;
+  await w.__loadStatus(); await settle();
+  check("it clears when the TV goes off", $("#np-panel-off").hidden);
 
 
   console.log("display personalisation");

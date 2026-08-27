@@ -177,6 +177,7 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
                          "player": s.player, "type": s.media_type}
                         for s in state.sessions]
             dim = state.dim
+            ha_blank = state.ha_blank
             plex_offline = state.plex_offline
         ip = ssid = ""
         if not in_ap_mode():
@@ -195,6 +196,10 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             "plex_url": cfg["plex"]["url"],
             "sessions": sessions,
             "dim": dim,
+            # A panel blanked by ha.tv_action looks exactly like a broken
+            # one, and the settings page is where someone goes to find out
+            # which it is — so say so, the same way plex_offline does.
+            "ha_blank": ha_blank,
             "plex_offline": plex_offline,
             "network": {
                 "status": netmgr.status if netmgr else "passive",

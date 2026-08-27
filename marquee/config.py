@@ -132,9 +132,12 @@ def defaults() -> dict:
             "url": "",
             "token": "",
             "tv_entity": "",
-            # False dims whenever the TV is on; True (the original behaviour)
+            # False acts whenever the TV is on; True (the original behaviour)
             # additionally requires the sun to be below the horizon.
             "require_sunset": True,
+            # What the TV being on does to the panel: "dim" (the original
+            # behaviour) or "off" — a theater room wants no light at all.
+            "tv_action": "dim",
             "poll_seconds": 60,
         },
         "network": {
@@ -322,6 +325,13 @@ def _scroll_speed(v):
     return s
 
 
+def _tv_action(v):
+    s = str(v).strip().lower()
+    if s not in ("dim", "off"):
+        raise ValueError(f"unknown TV action: {v!r}")
+    return s
+
+
 def _theme(v):
     s = str(v).strip().lower()
     if s not in ("auto", "light", "dark"):
@@ -373,6 +383,7 @@ _VALIDATORS = {
     "ha.token":                   str,
     "ha.tv_entity":               str,
     "ha.require_sunset":          _as_bool,
+    "ha.tv_action":               _tv_action,
     "ha.poll_seconds":            _int_range(5, 3600),
     "network.manage":             _as_bool,
     "network.ap_ssid_prefix":     lambda v: str(v).strip()[:24] or "Marquee-Setup",

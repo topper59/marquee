@@ -9,6 +9,8 @@
     <h2>Now playing</h2>
     <p id="np-offline" class="offline" hidden>Can’t reach Plex — the panel is
       showing a warning instead of what’s playing.</p>
+    <p id="np-panel-off" class="offline" hidden>Your TV is on — the panel is off
+      until it goes off again.</p>
     <ul id="np-list"></ul>
   </div>
 
@@ -237,16 +239,25 @@
     <a class="backlink" href="#">‹ Settings</a>
     <div class="card">
       <h2>Home Assistant <span class="tag">optional</span></h2>
-      <p class="hint">Dims the panel while your TV is on.</p>
+      <p class="hint">Dims or turns off the panel while your TV is on.</p>
       <label class="check">
-        <input type="checkbox" data-path="ha.enabled"> Enable Home Assistant dimming
+        <input type="checkbox" data-path="ha.enabled"> React to my TV
       </label>
+      <label>While the TV is on
+        <select data-path="ha.tv_action">
+          <option value="dim">Dim the panel</option>
+          <option value="off">Turn the panel off</option>
+        </select>
+      </label>
+      <p class="hint">Pick “turn off” for a theater room: a dimmed panel is
+        still a light source in a dark room. The panel comes back on its own
+        once the TV goes off.</p>
       <label class="check">
-        <input type="checkbox" data-path="ha.require_sunset"> Only dim after sunset
+        <input type="checkbox" data-path="ha.require_sunset"> Only after sunset
       </label>
-      <p class="hint">On, the panel dims only when the TV is on <i>and</i> the sun
-        has set (using Home Assistant’s <code>sun.sun</code>). Off, it dims
-        whenever the TV is on, day or night.</p>
+      <p class="hint">On, the panel reacts only when the TV is on <i>and</i> the
+        sun has set (using Home Assistant’s <code>sun.sun</code>). Off, it
+        reacts whenever the TV is on, day or night.</p>
       <label>URL
         <input type="text" data-path="ha.url" placeholder="https://homeassistant.local:8123">
       </label>
@@ -257,8 +268,8 @@
         <input type="text" data-path="ha.tv_entity" placeholder="media_player.living_room_tv">
       </label>
       <p class="hint">How far it dims is set under
-        <a href="#display">Display</a>, which now also dims on a schedule of
-        its own.</p>
+        <a href="#display">Display</a>, which also dims on a schedule of its
+        own.</p>
     </div>
   </section>
 

@@ -236,11 +236,18 @@ then starts threads over one lock-guarded `State`:
   `hide_paused`; empty means "everything", deny beats allow, and matching is
   case- and whitespace-insensitive because these are typed on a phone. Plex
   item types collapse onto movie/episode/track/other.
-- **`ha.py: ha_poller_loop`** — optional Home Assistant integration; sets the
-  single `dim` flag. The TV being on is always required; `ha.require_sunset`
-  (default true) adds the `sun.sun below_horizon` condition. Idles when
-  disabled. It is no longer the only way to dim: `display.dim_start`/
-  `dim_stop` do it on the clock, and the render loop ORs the two.
+- **`ha.py: ha_poller_loop`** — optional Home Assistant integration; sets
+  `State.dim` or `State.ha_blank`, never both. The TV being on is always
+  required; `ha.require_sunset` (default true) adds the `sun.sun
+  below_horizon` condition. `ha.tv_action` picks what that does: `dim` (the
+  original behaviour) or `off`, which blanks the panel through the same gate
+  as the display schedule — a theater room cannot use the dim brightness,
+  since any lit panel is a distraction in a dark room. `/api/status` carries
+  `ha_blank` so the settings page can say why the panel is dark, for the same
+  reason `plex_offline` is there — a blanked panel and a broken one look
+  identical. Idles when disabled.
+  Dimming is not HA-only: `display.dim_start`/`dim_stop` do it on the clock,
+  and the render loop ORs the two.
 - **`netmgr.py: NetManager`** — WiFi provisioning state machine over nmcli
   (AP mode + captive portal when unprovisioned). Provisioning is inert while
   config `network.manage` is false, but static addressing still applies (see

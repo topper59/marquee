@@ -114,7 +114,8 @@ async function loadSettings() {
   applyTheme();
   showAccentDefault();
   updateSaveState();
-  $("#menu-ha-sub").textContent = cfg.ha.enabled ? "On" : "Off";
+  $("#menu-ha-sub").textContent = !cfg.ha.enabled ? "Off"
+    : cfg.ha.tv_action === "off" ? "TV on \u2192 panel off" : "TV on \u2192 dim";
   $("#menu-filters-sub").textContent = filtersSummary(cfg.plex.filter);
   $("#menu-device-sub").textContent = cfg.device.name || "";
 }
@@ -194,6 +195,7 @@ async function loadStatus() {
     const list = $("#np-list");
     list.innerHTML = "";
     $("#np-offline").hidden = !st.plex_offline;
+    $("#np-panel-off").hidden = !st.ha_blank;
     if (st.sessions && st.sessions.length) {
       st.sessions.forEach((s) => {
         const li = document.createElement("li");
@@ -207,10 +209,10 @@ async function loadStatus() {
       });
       card.hidden = false;
     } else {
-      // The card still has something to say when Plex is unreachable: an
-      // empty page would read as "nothing is on", which is the confusion
-      // this is here to prevent.
-      card.hidden = !st.plex_offline;
+      // The card still has something to say when Plex is unreachable, or
+      // when Home Assistant has blanked the panel: an empty page would read
+      // as "nothing is on", which is the confusion this is here to prevent.
+      card.hidden = !st.plex_offline && !st.ha_blank;
     }
     renderSeen(st.sessions || []);
     const net = st.network || {};

@@ -1,8 +1,11 @@
-"""Home Assistant client and the dim-state poller thread.
+"""Home Assistant client and the TV-state poller thread.
 
 Optional integration: when disabled or unconfigured the poller idles and the
-panel simply never dims. The client is (re)built whenever the HA section of
-the config changes, so enabling it from the web UI needs no restart.
+panel simply never reacts to the TV. The client is (re)built whenever the HA
+section of the config changes, so enabling it from the web UI needs no
+restart. What the TV being on does to the panel is `ha.tv_action`: "dim"
+drops it to the dim brightness, "off" blanks it outright, which is what a
+theater room wants — a dim panel is still a light source in a dark room.
 """
 
 import logging
@@ -38,24 +41,24 @@ class HomeAssistant:
             log.warning("HA state fetch failed for %s: %s", entity_id, e)
             return None
 
-    def should_dim(self, tv_entity: str, require_sunset: bool = True) -> bool:
-        """True when the panel should drop to the dimmed brightness.
+    def tv_active(self, tv_entity: str, require_sunset: bool = True) -> bool:
+        """True when the panel should react to the TV (dim or go off).
 
         The TV being on is always required; sunset is an optional second
-        condition so a room that is dark all day can dim regardless.
+        condition so a room that is dark all day can react regardless.
         """
         tv_state = self.get_state(tv_entity)
         tv_on = tv_state not in (None, "off", "unavailable", "unknown", "standby")
         if not require_sunset:
-            log.debug("HA dim check — tv=%s (%s), sunset not required",
+            log.debug("HA TV check — tv=%s (%s), sunset not required",
                       tv_entity, tv_state)
             return tv_on
         # Skip the second request when the answer cannot change.
         if not tv_on:
-            log.debug("HA dim check — tv=%s (%s) off", tv_entity, tv_state)
+            log.debug("HA TV check — tv=%s (%s) off", tv_entity, tv_state)
             return False
         sun_state = self.get_state("sun.sun")
-        log.debug("HA dim check — tv=%s (%s) sun.sun=%s", tv_entity, tv_state, sun_state)
+        log.debug("HA TV check — tv=%s (%s) sun.sun=%s", tv_entity, tv_state, sun_state)
         return sun_state == "below_horizon"
 
 
@@ -68,9 +71,10 @@ def ha_poller_loop(config, state: State, stop: threading.Event):
         if not configured:
             if client is not None:
                 client = client_sig = None
-                log.info("HA integration disabled — dim off")
+                log.info("HA integration disabled — TV no longer affects the panel")
             with state.lock:
                 state.dim = False
+                state.ha_blank = False
         else:
             sig = (hc["url"], hc["token"])
             if sig != client_sig:
@@ -78,10 +82,13 @@ def ha_poller_loop(config, state: State, stop: threading.Event):
                 client_sig = sig
                 log.info("HA integration active (%s)", hc["url"])
             try:
-                dim = client.should_dim(hc["tv_entity"], hc["require_sunset"])
+                tv_on = client.tv_active(hc["tv_entity"], hc["require_sunset"])
+                blank = tv_on and hc["tv_action"] == "off"
                 with state.lock:
-                    state.dim = dim
-                log.debug("Dim state updated: %s", dim)
+                    state.dim = tv_on and not blank
+                    state.ha_blank = blank
+                log.debug("HA state updated: tv=%s action=%s",
+                          tv_on, hc["tv_action"])
             except Exception as e:
                 log.warning("HA poll cycle failed: %s", e)
         stop.wait(hc["poll_seconds"])

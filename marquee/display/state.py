@@ -60,7 +60,10 @@ class State:
         # different show mid-dwell.
         self.current_key: Optional[str] = None
         self.last_cycle = time.monotonic()
+        # Set by the HA poller: dim = drop to the dim brightness, ha_blank =
+        # turn the panel off outright (ha.tv_action). Never both.
         self.dim = False
+        self.ha_blank = False
         # True once Plex has failed enough polls in a row to be considered
         # gone. The idle clock alone would claim nothing is playing, which is
         # a different — and wrong — thing to tell someone.

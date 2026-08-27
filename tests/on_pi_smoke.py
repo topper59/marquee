@@ -476,7 +476,7 @@ with tempfile.TemporaryDirectory() as td:
     inm.clear_ipv4_error()
     check("error can be dismissed", inm.ipv4_error == "")
 
-print("HA dim rule")
+print("HA TV rule")
 from marquee.ha import HomeAssistant  # noqa: E402
 
 
@@ -498,13 +498,58 @@ for tv, sun, want_sunset, want_always in (
         (None,      "below_horizon", False, False),
         ("standby", "below_horizon", False, False)):
     ha = FakeHA({TV: tv, "sun.sun": sun})
-    check(f"tv={tv} sun={sun} → dim after sunset {want_sunset}",
-          ha.should_dim(TV, True) is want_sunset)
+    check(f"tv={tv} sun={sun} → active after sunset {want_sunset}",
+          ha.tv_active(TV, True) is want_sunset)
     ha2 = FakeHA({TV: tv, "sun.sun": sun})
-    check(f"tv={tv} sun={sun} → dim whenever on {want_always}",
-          ha2.should_dim(TV, False) is want_always)
+    check(f"tv={tv} sun={sun} → active whenever on {want_always}",
+          ha2.tv_active(TV, False) is want_always)
     check(f"tv={tv}: sun not consulted when not required",
           "sun.sun" not in ha2.asked)
+
+# ha.tv_action decides which flag the poller raises: "dim" drops the
+# brightness, "off" blanks the panel, and never both at once.
+import marquee.ha as hamod  # noqa: E402
+
+
+class OnePass(threading.Event):
+    """Ends the poller loop at its trailing wait, after exactly one cycle."""
+
+    def wait(self, timeout=None):
+        self.set()
+        return True
+
+
+for action, tv, want_dim, want_blank in (
+        ("dim", "playing", True,  False),
+        ("off", "playing", False, True),
+        ("dim", "off",     False, False),
+        ("off", "off",     False, False)):
+    with tempfile.TemporaryDirectory() as td:
+        c = cfgmod.Config(os.path.join(td, "config.json"))
+        c.update({"ha.enabled": True, "ha.url": "http://ha:8123",
+                  "ha.token": "t", "ha.tv_entity": TV,
+                  "ha.require_sunset": False, "ha.tv_action": action,
+                  "ha.poll_seconds": 5})
+        st = State()
+        fake = FakeHA({TV: tv})
+        orig = hamod.HomeAssistant
+        hamod.HomeAssistant = lambda url, token: fake
+        stop = OnePass()
+        try:
+            hamod.ha_poller_loop(c, st, stop)
+        finally:
+            hamod.HomeAssistant = orig
+        check(f"action={action} tv={tv} → dim={want_dim} blank={want_blank}",
+              st.dim is want_dim and st.ha_blank is want_blank)
+
+
+with tempfile.TemporaryDirectory() as td:
+    c = cfgmod.Config(os.path.join(td, "config.json"))
+    try:
+        c.update({"ha.tv_action": "nap"})
+        check("unknown tv_action rejected", False)
+    except ValueError:
+        check("unknown tv_action rejected", True)
 
 print("web link flow")
 with tempfile.TemporaryDirectory() as td:
