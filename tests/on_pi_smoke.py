@@ -551,6 +551,35 @@ with tempfile.TemporaryDirectory() as td:
     except ValueError:
         check("unknown tv_action rejected", True)
 
+
+# A disabled poller still has to notice being switched on, so it must not
+# sleep the full interval while idle.
+class RecordWait(threading.Event):
+    def __init__(self):
+        super().__init__()
+        self.waited = None
+
+    def wait(self, timeout=None):
+        self.waited = timeout
+        self.set()
+        return True
+
+
+for enabled, want in ((False, hamod.IDLE_POLL_SECONDS), (True, 30)):
+    with tempfile.TemporaryDirectory() as td:
+        c = cfgmod.Config(os.path.join(td, "config.json"))
+        c.update({"ha.enabled": enabled, "ha.url": "http://ha:8123",
+                  "ha.token": "t", "ha.tv_entity": TV,
+                  "ha.require_sunset": False, "ha.poll_seconds": 30})
+        orig = hamod.HomeAssistant
+        hamod.HomeAssistant = lambda url, token: FakeHA({TV: "off"})
+        stop = RecordWait()
+        try:
+            hamod.ha_poller_loop(c, State(), stop)
+        finally:
+            hamod.HomeAssistant = orig
+        check(f"ha wait enabled={enabled} → {want}s", stop.waited == want)
+
 print("web link flow")
 with tempfile.TemporaryDirectory() as td:
     import marquee.web.server as websrv

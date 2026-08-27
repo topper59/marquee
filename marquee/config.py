@@ -138,7 +138,12 @@ def defaults() -> dict:
             # What the TV being on does to the panel: "dim" (the original
             # behaviour) or "off" — a theater room wants no light at all.
             "tv_action": "dim",
-            "poll_seconds": 60,
+            # How quickly the panel follows the TV. This is the whole of the
+            # user-visible latency: the TV going on or off does nothing until
+            # the next poll, so a minute felt broken. Two requests per poll at
+            # worst (the sun one is skipped while the TV is off), against a
+            # box on the same LAN.
+            "poll_seconds": 10,
         },
         "network": {
             # On by default: an out-of-box or factory-reset device with no
@@ -384,7 +389,7 @@ _VALIDATORS = {
     "ha.tv_entity":               str,
     "ha.require_sunset":          _as_bool,
     "ha.tv_action":               _tv_action,
-    "ha.poll_seconds":            _int_range(5, 3600),
+    "ha.poll_seconds":            _int_range(2, 3600),
     "network.manage":             _as_bool,
     "network.ap_ssid_prefix":     lambda v: str(v).strip()[:24] or "Marquee-Setup",
     "network.join_timeout_s":     _int_range(10, 300),

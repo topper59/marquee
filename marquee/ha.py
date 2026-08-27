@@ -62,6 +62,12 @@ class HomeAssistant:
         return sun_state == "below_horizon"
 
 
+# While the integration is off there is nothing to poll, but the loop still
+# has to notice being switched on. Waiting a whole poll interval to do that
+# made enabling it from the settings page look broken.
+IDLE_POLL_SECONDS = 3
+
+
 def ha_poller_loop(config, state: State, stop: threading.Event):
     client = None
     client_sig = None
@@ -91,4 +97,6 @@ def ha_poller_loop(config, state: State, stop: threading.Event):
                           tv_on, hc["tv_action"])
             except Exception as e:
                 log.warning("HA poll cycle failed: %s", e)
-        stop.wait(hc["poll_seconds"])
+        wait = hc["poll_seconds"] if configured else min(
+            hc["poll_seconds"], IDLE_POLL_SECONDS)
+        stop.wait(wait)

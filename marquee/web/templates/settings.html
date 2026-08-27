@@ -270,6 +270,14 @@
       <p class="hint">How far it dims is set under
         <a href="#display">Display</a>, which also dims on a schedule of its
         own.</p>
+      <details>
+        <summary>Advanced</summary>
+        <label>Poll interval (seconds)
+          <input type="number" data-path="ha.poll_seconds" min="2" max="3600">
+        </label>
+        <p class="hint">How soon the panel follows the TV. Lower reacts
+          faster and asks Home Assistant more often.</p>
+      </details>
     </div>
   </section>
 
