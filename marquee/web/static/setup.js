@@ -23,8 +23,15 @@ function renderNetworks(nets) {
   nets.forEach((n) => {
     const li = document.createElement("li");
     const bars = n.signal > 66 ? "▂▄▆" : n.signal > 33 ? "▂▄" : "▂";
+    // textContent, not innerHTML: an SSID is whatever a radio nearby chose to
+    // broadcast, so it reaches this page as untrusted markup.
     const label = document.createElement("span");
-    label.innerHTML = `<b>${n.ssid}</b> <span class="meta">${bars}${n.secured ? " 🔒" : ""}</span>`;
+    const name = document.createElement("b");
+    name.textContent = n.ssid;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = ` ${bars}${n.secured ? " 🔒" : ""}`;
+    label.append(name, meta);
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "Join";
@@ -37,7 +44,11 @@ function renderNetworks(nets) {
 function chooseNetwork(ssid, secured) {
   chosenSsid = ssid;
   $("#wifi-join").hidden = false;
-  $("#wifi-chosen").innerHTML = `Joining <b>${ssid}</b>`;
+  const chosen = $("#wifi-chosen");
+  chosen.textContent = "Joining ";
+  const b = document.createElement("b");
+  b.textContent = ssid;
+  chosen.appendChild(b);
   $("#wifi-psk").value = "";
   $("#wifi-psk").parentElement.hidden = !secured;
   if (secured) $("#wifi-psk").focus();
@@ -53,11 +64,8 @@ async function scanWifi() {
 
 async function joinWifi() {
   if (!chosenSsid) return;
-  const res = await fetch("/api/wifi/join", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ssid: chosenSsid, psk: $("#wifi-psk").value }),
-  });
+  const res = await postJSON("/api/wifi/join",
+                             { ssid: chosenSsid, psk: $("#wifi-psk").value });
   const out = await res.json();
   if (!res.ok) { wifiMsg(out.error || "Could not start joining", true); return; }
   handedOff = true;
@@ -71,11 +79,7 @@ async function finish() {
     const cur = fieldValue(el);
     if (String(cur) !== el.dataset.initial) patch[el.dataset.path] = cur;
   });
-  const res = await fetch("/api/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
+  const res = await postJSON("/api/settings", patch);
   const out = await res.json();
   if (!res.ok) { toast(out.error || "Could not save", true); return; }
   toast("Setup complete!");

@@ -51,29 +51,46 @@ def bucket(media_type: str) -> str:
     return t if t in KNOWN_TYPES else "other"
 
 
+def compile_filter(filt: dict) -> dict:
+    """The rule lists as folded sets, ready to test sessions against.
+
+    Built once per poll rather than once per rule per session: allowed() used
+    to re-fold all five lists for every session it looked at.
+    """
+    return {
+        "hide_paused": bool(filt.get("hide_paused")),
+        "ignore_users": _folded(filt.get("ignore_users")),
+        "ignore_players": _folded(filt.get("ignore_players")),
+        "users": _folded(filt.get("users")),
+        "players": _folded(filt.get("players")),
+        "media_types": _folded(filt.get("media_types")),
+    }
+
+
 def allowed(session, filt: dict) -> bool:
-    """True if `session` passes every rule in `filt`."""
-    if filt.get("hide_paused") and session.state != "playing":
+    """True if `session` passes every rule in `filt` (a raw config filter)."""
+    return _allowed(session, compile_filter(filt))
+
+
+def _allowed(session, rules: dict) -> bool:
+    if rules["hide_paused"] and session.state != "playing":
         return False
 
     user = str(session.user or "").casefold()
     player = str(session.player or "").casefold()
 
     # Deny beats allow, so the deny-lists are checked first and unconditionally.
-    if user and user in _folded(filt.get("ignore_users")):
+    if user and user in rules["ignore_users"]:
         return False
-    if player and player in _folded(filt.get("ignore_players")):
-        return False
-
-    users = _folded(filt.get("users"))
-    if users and user not in users:
-        return False
-    players = _folded(filt.get("players"))
-    if players and player not in players:
+    if player and player in rules["ignore_players"]:
         return False
 
-    types = _folded(filt.get("media_types"))
-    if types and bucket(session.media_type) not in types:
+    if rules["users"] and user not in rules["users"]:
+        return False
+    if rules["players"] and player not in rules["players"]:
+        return False
+
+    if rules["media_types"] and bucket(session.media_type) not in rules["media_types"]:
         return False
 
     return True
@@ -86,4 +103,5 @@ def apply_filter(sessions: list, filt: dict) -> list:
     """
     if not filt:
         return list(sessions)
-    return [s for s in sessions if allowed(s, filt)]
+    rules = compile_filter(filt)
+    return [s for s in sessions if _allowed(s, rules)]

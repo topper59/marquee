@@ -10,6 +10,7 @@ without a restart for everything except the matrix hardware options.
 import os
 import json
 import copy
+import time
 import uuid
 import logging
 import tempfile
@@ -66,6 +67,9 @@ FONT_BIG  = f"{FONT_DIR}/7x13B.bdf"
 FONT_SM   = f"{FONT_DIR}/5x7.bdf"
 FONT_SUB  = f"{FONT_DIR}/7x13B.bdf"
 FONT_CLK  = f"{FONT_DIR}/7x13B.bdf"
+# Labels that have to fit a 64px half whatever they say. "Recently Played" is
+# 75px in 5x7 and 60px here — the gallery captions do not fit any wider face.
+FONT_TINY = f"{FONT_DIR}/4x6.bdf"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +118,11 @@ def defaults() -> dict:
             # the setup/link screens. The web UI keeps its own amber.
             "accent": "#e5a00d",
             # What the panel does with itself when nothing is playing:
-            # "clock", "blank" (dark), or "poster" (hold the last artwork).
+            # "clock", "blank" (dark), "poster" (hold the last artwork), or
+            # one of the two cycling galleries — "recent_played" walks what
+            # this display has shown, "recent_added" walks what the Plex
+            # server has just gained. Both caption themselves on the panel,
+            # because a lone poster gives no clue which one you are looking at.
             "idle_mode": "clock",
             "clock_24h": False,
             # Which half of the panel holds the poster: "left" (the default)
@@ -126,6 +134,14 @@ def defaults() -> dict:
             # one-person server, where the row is a wasted eighth of the
             # panel — the other rows spread out to fill it.
             "show_user": True,
+            # Manual "not right now" control, set from the home page rather
+            # than saved with the rest of this section. "off" blanks the
+            # panel and "on" lights it through a schedule that says otherwise;
+            # override_until is a unix time, or 0 for "until I say".
+            # Kept in config so it survives a restart — someone who silenced
+            # the panel for the evening does not want a power blip undoing it.
+            "override": "none",
+            "override_until": 0,
         },
         "ha": {
             "enabled": False,
@@ -308,11 +324,43 @@ def _hex_color(v):
     return "#%02x%02x%02x" % hex_to_rgb(v)
 
 
+IDLE_MODES = ("clock", "blank", "poster", "recent_played", "recent_added")
+# The two gallery modes need artwork the panel does not already have on hand,
+# so the fetcher only does that work when one of them is selected.
+GALLERY_MODES = ("recent_played", "recent_added")
+
+
 def _idle_mode(v):
     s = str(v).strip().lower()
-    if s not in ("clock", "blank", "poster"):
-        raise ValueError(f"unknown idle mode: {v!r}")
+    if s not in IDLE_MODES:
+        raise ValueError(f"unknown idle mode: {v!r} (expected one of "
+                         f"{', '.join(IDLE_MODES)})")
     return s
+
+
+def _override(v):
+    s = str(v).strip().lower()
+    if s not in ("none", "on", "off"):
+        raise ValueError(f"unknown override: {v!r}")
+    return s
+
+
+def effective_override(mode: str, until, now: float = None) -> str:
+    """The override actually in force — "none" once its clock has run out.
+
+    Shared by the render loop and the web API so the panel and the page can
+    never disagree about whether someone's "off for an hour" is still on. An
+    expired override is treated as absent rather than rewritten: the render
+    loop must not do file I/O, and a stale line in config.json costs nothing
+    until the next time anyone looks.
+    """
+    if mode not in ("on", "off"):
+        return "none"
+    if not until:
+        return mode          # 0 means "until I say otherwise"
+    if now is None:
+        now = time.time()
+    return mode if now < until else "none"
 
 
 def _poster_side(v):
@@ -379,6 +427,8 @@ _VALIDATORS = {
     "display.dim_stop":           _hhmm,
     "display.accent":             _hex_color,
     "display.idle_mode":          _idle_mode,
+    "display.override":           _override,
+    "display.override_until":     lambda v: max(0, int(float(v))),
     "display.clock_24h":          _as_bool,
     "display.poster_side":        _poster_side,
     "display.scroll_speed":       _scroll_speed,
@@ -515,11 +565,23 @@ class Config:
                 pass
             return False
         # Merge over defaults so new keys appear with sane values on upgrade.
+        # Every stored value goes through its own validator on the way in: the
+        # file is hand-editable, and a value update() would have rejected must
+        # not reach the render loop instead. A bad one falls back to its
+        # default — one wrong setting, not a service that will not boot.
         for path, value in _flatten(stored).items():
             try:
                 _get_path(self._data, path)          # known key?
             except KeyError:
                 continue
+            validator = _VALIDATORS.get(path)
+            if validator is not None:
+                try:
+                    value = validator(value)
+                except (ValueError, TypeError) as e:
+                    log.warning("Ignoring bad %s in %s (%s) — using the default",
+                                path, self.path, e)
+                    continue
             _set_path(self._data, path, value)
         return True
 

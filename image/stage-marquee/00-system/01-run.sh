@@ -32,4 +32,13 @@ systemctl enable NetworkManager
 systemctl enable nftables
 systemctl enable marquee
 systemctl disable ssh || true
+
+# pi-gen insists on creating a login account, and every image built from this
+# workflow gets the same one. SSH ships disabled, but the settings page offers
+# to turn it on — and the moment someone does, that shared username and
+# password are a way into every Marquee ever flashed. Lock the password so the
+# account cannot authenticate; the SSH toggle sets a root password the owner
+# chooses, which is the only credential this device should ever have.
+passwd --lock marquee || true
+passwd --lock root || true
 EOF

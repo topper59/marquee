@@ -31,6 +31,8 @@ const CFG = {
   log_level: "INFO",
 };
 const STATUS = { sessions: [], plex_offline: false, ha_blank: false,
+                 panel: { on: true, override: "none", override_until: 0,
+                          in_schedule: true, ha_blank: false },
                  network: { status: "online", ip: "192.168.2.129",
                  ssid: "Wifi", mac: "DC:A6:32:02:9C:47", ipv4_method: "auto",
                  ipv4_error: "" } };
@@ -66,6 +68,14 @@ w.fetch = async (url, opts) => {
     json = post ? { changed: Object.keys(body), restart_required: [] } : CFG;
   } else if (url === "/api/status") {
     json = STATUS;
+  } else if (url === "/api/panel") {
+    // Echo what the page asked for, the way the device does.
+    json = body.state === "off"
+      ? { on: false, override: "off", in_schedule: true, ha_blank: false,
+          override_until: body.minutes
+            ? Math.floor(Date.now() / 1000) + body.minutes * 60 : 0 }
+      : { on: true, override: body.state === "on" ? "on" : "none",
+          override_until: 0, in_schedule: true, ha_blank: false };
   } else if (url === "/api/plex/auth/start") {
     json = { code: "WXYZ" };
   } else if (url === "/api/plex/auth/poll") {
@@ -77,7 +87,8 @@ w.fetch = async (url, opts) => {
 w.eval(fs.readFileSync(SRC + "picker.js", "utf8") + "\n" +
        fs.readFileSync(SRC + "app.js", "utf8") + "\n" +
        "window.__save = save;\nwindow.__renderCandidates = renderCandidates;\n" +
-       "window.__loadStatus = loadStatus;\nwindow.__loadSettings = loadSettings;");
+       "window.__loadStatus = loadStatus;\nwindow.__loadSettings = loadSettings;\n" +
+       "window.__restart = restart;");
 
 const $ = (s) => w.document.querySelector(s);
 const renderCandidatesForTest = () =>
@@ -444,6 +455,59 @@ const edit = (path, value) => {
   go("#"); await settle();
   check("leaving asks", confirmed.length === 1 && /Display/.test(confirmed[0]));
   check("the accent is put back", field("display.accent").value === "#e5a00d");
+
+  console.log("untrusted names are text, never markup");
+  // An SSID or a Plex server name is written by someone else — a neighbour's
+  // access point, another account's server. Rendered as markup it is script
+  // injection into the page that holds the WiFi password.
+  w.__renderCandidates(
+    [{ name: "<img src=x onerror=alert(1)>", url: "http://a:32400" }], () => {});
+  const li = $("#plex-candidates li");
+  check("a scripted server name renders no element",
+        li.querySelectorAll("img").length === 0);
+  check("and shows the raw name as text",
+        li.textContent.includes("<img src=x onerror=alert(1)>"));
+
+  console.log("restart and reboot are confirmed, not bare posts");
+  posted = [];
+  confirmAnswer = true;
+  await w.__restart(); await settle();
+  const rb = posted.find((p) => p.url === "/api/restart");
+  check("restart sends a JSON confirmation", rb && rb.body.confirm === true);
+
+  console.log("the panel card acts immediately, not on Save");
+  go("#"); await settle();
+  await w.__loadStatus(); await settle();
+  check("the card reports the panel lit", $("#panel-state").textContent === "On");
+  check("off actions are what is offered", !$("#panel-off-actions").hidden);
+  check("and no override to undo yet", $("#panel-auto").hidden);
+
+  posted = [];
+  $('#panel-card [data-off="60"]').click(); await settle();
+  const pb = posted.find((p) => p.url === "/api/panel");
+  check("an hour off posts state and minutes",
+        pb && pb.body.state === "off" && pb.body.minutes === 60);
+  // The card must reflect the device's answer without waiting for a poll:
+  // a button that looks like it did nothing gets pressed again.
+  check("the card goes to Off at once", $("#panel-state").textContent === "Off");
+  check("and now offers to turn it on", !$("#panel-on-actions").hidden);
+  check("and offers the schedule back", !$("#panel-auto").hidden);
+  check("the reason names the override",
+        /Turned off by hand until /.test($("#panel-why").textContent));
+
+  posted = [];
+  $("#panel-auto").click(); await settle();
+  const ab = posted.find((p) => p.url === "/api/panel");
+  check("back-to-schedule posts auto", ab && ab.body.state === "auto");
+  check("and the card is lit again", $("#panel-state").textContent === "On");
+
+  // The panel card is not a form field, so it must never make Save light up.
+  check("the panel card leaves Save alone", $("#save").disabled);
+
+  console.log("the new idle modes are offered");
+  const idle = [...field("display.idle_mode").options].map((o) => o.value);
+  check("recently played is an option", idle.includes("recent_played"));
+  check("recently added is an option", idle.includes("recent_added"));
 
   console.log(fails ? `\n${fails} FAILED` : "\nall passed");
   process.exit(fails ? 1 : 0);

@@ -75,7 +75,28 @@ def load_fonts():
     sub     = graphics.Font(); sub.LoadFont(config.FONT_SM)
     sub_big = graphics.Font(); sub_big.LoadFont(config.FONT_SUB)
     clk     = graphics.Font(); clk.LoadFont(config.FONT_CLK)
-    return title, sub, sub_big, clk
+    tiny    = graphics.Font(); tiny.LoadFont(config.FONT_TINY)
+    return title, sub, sub_big, clk, tiny
+
+
+def fit_text(font, text: str, width: int) -> str:
+    """`text` trimmed to `width` pixels, with an ellipsis if anything was cut.
+
+    graphics.DrawText happily draws past the end of its half — that is what
+    clipped "Recently Played" to "Recently Play" — and with the poster on the
+    right the overrun lands on the artwork rather than off the panel edge. So
+    anything whose length is not known in advance goes through here.
+    """
+    if text_width(font, text) <= width:
+        return text
+    ell = "…"
+    budget = width - text_width(font, ell)
+    out = ""
+    for ch in text:
+        if text_width(font, out + ch) > budget:
+            break
+        out += ch
+    return out.rstrip() + ell
 
 
 def wrap_two_lines(text: str, max_chars: int) -> tuple[str, str]:
@@ -86,6 +107,11 @@ def wrap_two_lines(text: str, max_chars: int) -> tuple[str, str]:
     reorder subtitles — a short word following a long one would jump back up to
     fill the gap ("S04E03 Got" / "Richmond's T"). Anything that will not fit in
     two lines is cut short with an ellipsis.
+
+    A word too long for a line on its own stays on the line it landed on. It
+    used to be pushed down to line two even when line one was still empty,
+    which drew a blank row above a hard-truncated word — the one case where
+    the wrapper made the panel look broken rather than merely full.
     """
     lines = ["", ""]
     idx = 0
@@ -93,13 +119,24 @@ def wrap_two_lines(text: str, max_chars: int) -> tuple[str, str]:
         candidate = f"{lines[idx]} {word}".strip()
         if len(candidate) <= max_chars:
             lines[idx] = candidate
-        elif idx == 0:
+        elif idx == 0 and lines[0]:
             idx = 1
-            lines[idx] = word[:max_chars]
+            lines[1] = _ellipsize(word, max_chars)
+        elif idx == 0:
+            # Nothing on line one to push down to line two; truncate in place.
+            lines[0] = _ellipsize(word, max_chars)
+            idx = 1
         else:
-            lines[1] = lines[1][:max_chars - 1].rstrip() + "…"
+            lines[1] = _ellipsize(lines[1] + " " + word, max_chars)
             break
     return lines[0], lines[1]
+
+
+def _ellipsize(text: str, max_chars: int) -> str:
+    """`text` cut to fit, with an ellipsis standing in for what was dropped."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 1].rstrip() + "…"
 
 
 def format_remaining(duration_ms: float, view_offset_ms: float) -> str:

@@ -25,7 +25,10 @@ jobs:
       # Single source of truth: the stage consumes the same files pi/etc/
       # deploys to the dev device, plus the app source at its current version.
       - name: Stage app source and system files
+        id: stage
         run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' marquee/__init__.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           mkdir -p image/stage-marquee/00-system/files image/stage-marquee/01-app/files
           cp pi/etc/marquee.service pi/etc/captive-dnsmasq.conf \
              pi/etc/nftables.conf pi/etc/20auto-upgrades \
@@ -60,11 +63,23 @@ jobs:
           compression: xz
           verbose-output: true
 
+      # pi-gen names its output <date>-marquee...; the date says nothing about
+      # what is inside, so rename it after the app version baked into it.
+      - name: Name the image after the app version
+        id: image
+        run: |
+          src='${{ steps.build.outputs.image-path }}'
+          base=$(basename "$src")
+          # <date>-marquee-lite.img.xz -> marquee-<version>-lite.img.xz
+          dst="$(dirname "$src")/marquee-${{ steps.stage.outputs.version }}${base#*-marquee}"
+          mv "$src" "$dst"
+          echo "path=$dst" >> "$GITHUB_OUTPUT"
+
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
           name: marquee-sd-image
-          path: ${{ steps.build.outputs.image-path }}
+          path: ${{ steps.image.outputs.path }}
           retention-days: 30
 
       - name: Attach image to release
@@ -73,4 +88,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            "${{ steps.build.outputs.image-path }}" --clobber
+            "${{ steps.image.outputs.path }}" --clobber

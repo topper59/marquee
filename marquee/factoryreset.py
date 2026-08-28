@@ -30,7 +30,7 @@ import subprocess
 import sys
 
 from marquee import config as cfgmod
-from marquee.netmgr import AP_CON, STATION_CON
+from marquee.netmgr import AP_CON, STATION_CON, wifi_profile_names
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,42 @@ log = logging.getLogger(__name__)
 # how a reset knows SSH was enabled through the UI (and should be turned off
 # again) rather than set up by hand on a dev machine (and left alone).
 SSHD_DROPIN = "/etc/ssh/sshd_config.d/20-marquee.conf"
+
+
+def _nmcli(args: list, timeout: float = 15) -> tuple:
+    """Run nmcli through *this module's* subprocess, returning (rc, stdout).
+
+    Deliberately not netmgr's identical helper: the smoke test neutralises a
+    reset by stubbing `factoryreset.subprocess`, and a second path into nmcli
+    would slip straight past that stub and delete the test machine's real WiFi
+    profiles. One choke point, and the stub covers everything.
+    """
+    p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    return p.returncode, (p.stdout or "")
+
+
+def _delete_wifi_profiles(run_cmd=None) -> None:
+    """Delete every saved WiFi profile, not just the ones we created.
+
+    Out-of-box means no network of its own, and the settings page promises
+    exactly that: the display leaves your WiFi and raises Marquee-Setup. A
+    device provisioned by hand — or by an image whose profile is named after
+    the SSID — keeps its connection under some other name, so deleting only
+    marquee-wifi/marquee-ap left it online and never entering setup mode.
+
+    If the enumeration itself fails (no nmcli, NetworkManager down) fall back
+    to the two names we know. A reset that quietly keeps the network is worse
+    than one that deletes less than it hoped to.
+    """
+    run_cmd = run_cmd or _nmcli
+    names = wifi_profile_names(run_cmd)
+    if not names:
+        names = [STATION_CON, AP_CON]
+        log.warning("Could not list WiFi profiles — falling back to %s",
+                    ", ".join(names))
+    for con in names:
+        run_cmd(["nmcli", "con", "delete", con], timeout=15)
+    log.info("Deleted WiFi profiles: %s", ", ".join(names))
 
 
 def reset(config_path: str = None, keep_wifi: bool = False,
@@ -67,10 +103,7 @@ def reset(config_path: str = None, keep_wifi: bool = False,
     if keep_wifi:
         log.info("Keeping WiFi profiles (--keep-wifi)")
     else:
-        for con in (STATION_CON, AP_CON):
-            subprocess.run(["nmcli", "con", "delete", con],
-                           capture_output=True, timeout=15)
-        log.info("Deleted WiFi profiles %s, %s", STATION_CON, AP_CON)
+        _delete_wifi_profiles()
 
     if restart:
         # Detached so the caller (web request, SSH session, button thread)

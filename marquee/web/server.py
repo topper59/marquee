@@ -14,11 +14,14 @@ import sys
 import threading
 import time
 
+from urllib.parse import urlsplit
+
 from flask import Flask, jsonify, request, render_template, session
 
 from flask import redirect
 
 import marquee
+import marquee.config
 from marquee import update
 from marquee.config import RESTART_REQUIRED
 from marquee.display.state import DisplayMode
@@ -26,6 +29,18 @@ from marquee.factoryreset import SSHD_DROPIN
 from marquee.netmgr import AP_IP, local_ip, wifi_mac
 from marquee.plex import auth as plex_auth
 from marquee.plex.discovery import gdm_discover, probe_server
+
+
+def render_schedule(disp: dict) -> bool:
+    """Is the clock's display window open right now?
+
+    Imported lazily inside the call because render.py pulls in rgbmatrix, and
+    the web module has to stay importable on a machine without the panel.
+    """
+    from marquee.config import parse_hhmm
+    from marquee.display.render import is_within_schedule
+    return is_within_schedule(parse_hhmm(disp["schedule_start"]),
+                              parse_hhmm(disp["schedule_stop"]))
 
 # Paths OSes fetch to detect a captive portal; answering with a redirect to
 # the portal is what pops the sign-in sheet.
@@ -50,6 +65,31 @@ PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 SENTINEL = "•••"
 SECRET_PATHS = ("plex.token", "ha.token", "web.password")
 
+# What the setup portal is allowed to reach while the AP is up.
+#
+# The AP is an OPEN network — it has to be, since nobody can be given a
+# passphrase for a device they have not set up yet — and the password gate is
+# necessarily off in that state. So anyone within radio range is, briefly, an
+# anonymous caller with full reach. Everything the wizard genuinely needs is
+# listed here; everything else (enabling SSH, factory reset, reboot, software
+# updates, setting the settings password) waits until the device is on a
+# network its owner controls.
+AP_ALLOWED_EXACT = frozenset({
+    "/", "/api/status", "/api/wifi/scan", "/api/wifi/join", "/api/settings",
+    "/api/network/clear-error",
+})
+AP_ALLOWED_PREFIXES = ("/static/", "/api/plex/")
+
+# Settings that must never be writable through the generic settings API.
+# web.password is hashed by /api/password; writing it here would store the
+# raw string and lock everyone out, since login compares against a digest.
+SETTINGS_DENY = frozenset({"web.password"})
+
+# Login throttling. Small enough not to annoy a fat-fingered owner, harsh
+# enough that guessing over the LAN is not a realistic attack.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_S = 60
+
 
 def _get_path(d, path):
     for part in path.split("."):
@@ -70,6 +110,37 @@ def _ssh_active() -> bool:
     return out.stdout.strip() == "active"
 
 
+class _Cached:
+    """A value refreshed at most every `ttl` seconds.
+
+    /api/status is polled every 10s by every open settings page, and each call
+    used to fork three helpers (systemctl, and nmcli twice) on a Pi whose
+    spare CPU is the matrix refresh's. None of these answers change between
+    two polls, and a stale one for a few seconds costs nothing.
+    """
+
+    def __init__(self, fn, ttl: float):
+        self.fn, self.ttl = fn, ttl
+        self.at, self.value = 0.0, None
+        self.lock = threading.Lock()
+
+    def __call__(self):
+        with self.lock:
+            now = time.monotonic()
+            if now - self.at >= self.ttl or self.value is None:
+                try:
+                    self.value = self.fn()
+                except Exception:
+                    log.debug("cached probe failed", exc_info=True)
+                    self.value = self.value if self.value is not None else ""
+                self.at = now
+            return self.value
+
+    def invalidate(self):
+        with self.lock:
+            self.at = 0.0
+
+
 def create_app(config, state, netmgr=None, updater=None) -> Flask:
     app = Flask(__name__)
     # Sessions only carry the "authed" flag; a fresh key per process simply
@@ -81,6 +152,11 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
     def in_ap_mode() -> bool:
         return netmgr is not None and netmgr.in_ap_mode()
 
+    # Shelled-out facts, refreshed no faster than the page can use them.
+    ssh_active = _Cached(_ssh_active, 15)
+    net_ip = _Cached(lambda: (netmgr.ip_address() if netmgr else "") or local_ip(), 15)
+    net_ssid = _Cached(lambda: netmgr.connected_ssid() if netmgr else "", 30)
+
     @app.context_processor
     def inject_theme():
         """Render the theme into <html> so the first paint is already right.
@@ -89,6 +165,50 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
         exactly what someone picking dark mode is trying to avoid.
         """
         return {"theme": config.get()["web"]["theme"]}
+
+    # ── Cross-site request blocking ───────────────────────────────────────
+    @app.before_request
+    def block_cross_site():
+        """Refuse state-changing requests that a *different* site set off.
+
+        Requiring a JSON body already stops most of this — a cross-site form
+        cannot set application/json — but it is not a rule the whole API can
+        follow: the update upload is genuinely multipart, which a form can
+        send. Browsers attach Origin to every cross-origin POST and
+        Sec-Fetch-Site to every request, so checking those covers the lot.
+
+        Absent headers are allowed through on purpose. curl, and the Home
+        Assistant `rest_command` in the README, send neither — and a request
+        with no browser behind it is not a request some other site tricked a
+        browser into making.
+        """
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":
+            return jsonify({"error": "cross-site request refused"}), 403
+        origin = request.headers.get("Origin")
+        if origin:
+            netloc = urlsplit(origin).netloc
+            if netloc and netloc != request.host:
+                log.warning("Refused a cross-site %s to %s from %s",
+                            request.method, request.path, origin)
+                return jsonify({"error": "cross-site request refused"}), 403
+        return None
+
+    # ── Setup-AP exposure ─────────────────────────────────────────────────
+    @app.before_request
+    def restrict_ap_mode():
+        """While the open setup AP is up, serve only the wizard."""
+        if not in_ap_mode():
+            return None
+        path = request.path
+        if path in AP_ALLOWED_EXACT or path.startswith(AP_ALLOWED_PREFIXES):
+            return None
+        if path in CAPTIVE_PROBES:
+            return None      # captive_redirect below answers these
+        log.warning("Refused %s during setup: not reachable until the display "
+                    "is on a real network", path)
+        return jsonify({"error": "not available during setup"}), 403
 
     # ── Optional settings password ────────────────────────────────────────
     @app.before_request
@@ -102,17 +222,52 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             return jsonify({"error": "password required"}), 401
         return redirect("/login")
 
+    # Failed logins per client address: {ip: (count, locked_until)}. In memory
+    # and per process, which is the right lifetime — a restart re-asks for the
+    # password anyway, since the session key is regenerated with it.
+    login_failures = {}
+    login_lock = threading.Lock()
+
+    def login_blocked(ip: str) -> float:
+        """Seconds left on this address's lockout, 0 if it may try."""
+        with login_lock:
+            count, until = login_failures.get(ip, (0, 0.0))
+            return max(0.0, until - time.monotonic())
+
+    def note_login(ip: str, ok: bool):
+        with login_lock:
+            if ok:
+                login_failures.pop(ip, None)
+                return
+            count, _ = login_failures.get(ip, (0, 0.0))
+            count += 1
+            until = (time.monotonic() + LOGIN_LOCKOUT_S
+                     if count >= LOGIN_MAX_FAILURES else 0.0)
+            if until:
+                log.warning("Locking out %s after %d failed logins", ip, count)
+                count = 0
+            login_failures[ip] = (count, until)
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         error = ""
         if request.method == "POST":
-            given = hashlib.sha256(
-                request.form.get("password", "").encode()).hexdigest()
-            stored = config.get()["web"]["password"] or ""
-            if secrets.compare_digest(given, stored):
-                session["authed"] = True
-                return redirect("/")
-            error = "Wrong password"
+            # Unsalted SHA-256 is fast by design, so nothing but a lockout
+            # stops a script working through a short password at wire speed.
+            ip = request.remote_addr or "?"
+            wait = login_blocked(ip)
+            if wait:
+                error = f"Too many attempts — wait {int(wait) + 1}s."
+            else:
+                given = hashlib.sha256(
+                    request.form.get("password", "").encode()).hexdigest()
+                stored = config.get()["web"]["password"] or ""
+                ok = bool(stored) and secrets.compare_digest(given, stored)
+                note_login(ip, ok)
+                if ok:
+                    session["authed"] = True
+                    return redirect("/")
+                error = "Wrong password"
         cfg = config.get()
         return render_template("login.html", error=error,
                                device_name=cfg["device"]["name"],
@@ -120,7 +275,14 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
 
     @app.post("/api/password")
     def set_password():
-        body = request.get_json(silent=True) or {}
+        # A *missing* body used to mean "" here, i.e. "remove the password".
+        # That turned an empty cross-site POST into a way to disable the
+        # settings password, so absence is now an error and only an explicit
+        # empty string clears it.
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or "password" not in body:
+            return jsonify({"error": "expected a JSON object with a "
+                                     "'password' field"}), 400
         pw = str(body.get("password") or "")
         config.update({"web.password":
                        hashlib.sha256(pw.encode()).hexdigest() if pw else None})
@@ -183,8 +345,8 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
         if not in_ap_mode():
             # local_ip() covers unmanaged devices (network.manage=false),
             # where netmgr never learns an address.
-            ip = (netmgr.ip_address() if netmgr else "") or local_ip()
-            ssid = netmgr.connected_ssid() if netmgr else ""
+            ip = net_ip()
+            ssid = net_ssid()
         return jsonify({
             "device": cfg["device"]["name"],
             "version": marquee.__version__,
@@ -192,7 +354,7 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             # Set by apt when a security update (kernel, libc) wants a
             # reboot; the Device page offers the restart, never forces it.
             "reboot_required": os.path.exists("/var/run/reboot-required"),
-            "ssh_active": _ssh_active(),
+            "ssh_active": ssh_active(),
             "plex_url": cfg["plex"]["url"],
             "sessions": sessions,
             "dim": dim,
@@ -201,6 +363,7 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             # which it is — so say so, the same way plex_offline does.
             "ha_blank": ha_blank,
             "plex_offline": plex_offline,
+            "panel": _panel_state(),
             "network": {
                 "status": netmgr.status if netmgr else "passive",
                 "error": netmgr.last_error if netmgr else "",
@@ -227,6 +390,10 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             return jsonify({"error": "expected a JSON object of {path: value}"}), 400
         # Sentinel means "unchanged secret" — never write it through.
         patch = {k: v for k, v in patch.items() if v != SENTINEL}
+        denied = SETTINGS_DENY & patch.keys()
+        if denied:
+            return jsonify({"error": f"{', '.join(sorted(denied))} cannot be "
+                                     "set here"}), 400
         try:
             changed = config.update(patch)
         except (ValueError, TypeError) as e:
@@ -234,6 +401,7 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
         # A fresh addressing attempt supersedes whatever the last one said.
         if netmgr is not None and any(k.startswith("network.ipv4") for k in patch):
             netmgr.clear_ipv4_error()
+            net_ip.invalidate()
         return jsonify({
             "changed": sorted(changed),
             "restart_required": sorted(changed & RESTART_REQUIRED),
@@ -374,6 +542,65 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             err = "this server requires Plex sign-in"
         return jsonify({"saved": False, "error": err}), 502
 
+    # ── Panel override ────────────────────────────────────────────────────
+    # Deliberately its own endpoint rather than a field in the Display
+    # section: this is a thing you do, not a setting you save, and it has to
+    # take effect the instant it is pressed. It is also the endpoint a Home
+    # Assistant `rest_command` calls — see the README.
+    @app.post("/api/panel")
+    def set_panel():
+        body = request.get_json(silent=True) or {}
+        want = str(body.get("state", "")).strip().lower()
+        if want not in ("on", "off", "auto"):
+            return jsonify({"error": "state must be on, off or auto"}), 400
+        # minutes=0 (or absent) means "until someone says otherwise".
+        try:
+            minutes = int(body.get("minutes") or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "minutes must be a number"}), 400
+        if not (0 <= minutes <= 60 * 24 * 30):
+            return jsonify({"error": "minutes out of range"}), 400
+
+        if want == "auto":
+            patch = {"display.override": "none", "display.override_until": 0}
+        else:
+            patch = {"display.override": want,
+                     "display.override_until":
+                         int(time.time() + minutes * 60) if minutes else 0}
+        try:
+            config.update(patch)
+        except (ValueError, TypeError) as e:
+            return jsonify({"error": str(e)}), 400
+        log.info("Panel override → %s%s", want,
+                 f" for {minutes} min" if minutes and want != "auto" else "")
+        return jsonify(_panel_state())
+
+    def _panel_state() -> dict:
+        """What the panel is doing and why — the answer both the settings page
+        and a Home Assistant sensor want."""
+        cfg = config.get()
+        disp = cfg["display"]
+        override = marquee.config.effective_override(
+            disp["override"], disp["override_until"])
+        with state.lock:
+            ha_blank = state.ha_blank
+        in_schedule = render_schedule(disp)
+        on = override == "on" or (
+            override != "off" and in_schedule and not ha_blank)
+        return {
+            "on": on,
+            "override": override,
+            # 0 when the override has no clock on it; the page turns this into
+            # "off until 9:42 PM" rather than making anyone read a timestamp.
+            "override_until": disp["override_until"] if override != "none" else 0,
+            "in_schedule": in_schedule,
+            "ha_blank": ha_blank,
+        }
+
+    @app.get("/api/panel")
+    def get_panel():
+        return jsonify(_panel_state())
+
     @app.post("/api/network/clear-error")
     def clear_network_error():
         if netmgr is not None:
@@ -495,7 +722,12 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
         """Toggle the sshd service. Turning it on requires choosing a root
         password first — shipping a fleet that shares any default credential
         is the one classic IoT mistake this page must make impossible."""
-        body = request.get_json(silent=True) or {}
+        # Absence used to read as enabled=False, so an empty cross-site POST
+        # switched SSH off. The caller has to say which way it wants.
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or "enabled" not in body:
+            return jsonify({"error": "expected a JSON object with an "
+                                     "'enabled' field"}), 400
         enable = bool(body.get("enabled"))
         try:
             if enable:
@@ -527,13 +759,28 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
                 log.warning("SSH disabled from the web UI")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                 OSError) as e:
+            ssh_active.invalidate()
             return jsonify({"error": f"could not change SSH state: {e}"}), 500
+        ssh_active.invalidate()
         return jsonify({"ok": True, "enabled": enable})
+
+    def _confirmed() -> bool:
+        """Did this request actually come from the settings page?
+
+        A cross-origin HTML form can POST here without any script running, but
+        it cannot send a JSON body — so requiring the same {"confirm": true}
+        the factory-reset endpoint asks for is what stops a page in another
+        tab from power-cycling the display. It is not a substitute for the
+        optional password; it is the floor underneath a device with none set.
+        """
+        return (request.get_json(silent=True) or {}).get("confirm") is True
 
     @app.post("/api/reboot")
     def reboot():
         """Full OS reboot — what a kernel security update needs; the app
         restart below is not enough for that."""
+        if not _confirmed():
+            return jsonify({"error": "confirmation required"}), 400
         subprocess.Popen(["systemd-run", "--collect", "--on-active=2",
                           "systemctl", "reboot"])
         return jsonify({"ok": True})
@@ -542,6 +789,8 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
     def restart():
         # systemd-run detaches the restart from this process, so the HTTP
         # response gets out before the service goes down.
+        if not _confirmed():
+            return jsonify({"error": "confirmation required"}), 400
         subprocess.Popen(["systemd-run", "--collect", "--on-active=2",
                           "systemctl", "restart", "marquee.service"])
         return jsonify({"ok": True})

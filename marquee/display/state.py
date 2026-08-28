@@ -8,6 +8,8 @@ from typing import Optional
 
 from PIL import Image
 
+from marquee.gallery import Gallery
+
 
 class DisplayMode(Enum):
     """What the panel is showing. NORMAL is the playing/idle display; the
@@ -39,6 +41,8 @@ class Session:
     # Who/what is playing it, kept for the session filter (see plex/filter.py).
     player: str = ""
     media_type: str = ""
+    # Music only: the album, which gets a row of its own on the track layout.
+    album: str = ""
     poster: Optional[Image.Image] = field(default=None, repr=False)
     # Lazily built from `poster` the first time this session is seen paused.
     poster_paused: Optional[Image.Image] = field(default=None, repr=False)
@@ -71,6 +75,14 @@ class State:
         # Artwork from the last thing that played, kept so the "poster" idle
         # mode has something to show. One image, replaced not accumulated.
         self.last_poster: Optional[Image.Image] = None
+        # The two cycling idle galleries. Both own their own locks, so unlike
+        # everything above they are read without holding this one — the render
+        # loop must not wait on a fetcher writing history to disk.
+        self.recent_played = Gallery("Recently Played", "played", persist=True)
+        self.recent_added = Gallery("Recently Added", "added")
+        # Which gallery frame is on screen, and when it last changed.
+        self.gallery_index = 0
+        self.gallery_cycled = time.monotonic()
         self.mode = DisplayMode.NORMAL
         self.mode_payload: dict = {}
 

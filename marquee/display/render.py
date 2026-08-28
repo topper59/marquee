@@ -14,7 +14,7 @@ from marquee.netmgr import local_ip
 from marquee.display.state import State, DisplayMode
 from marquee.display.matrix import (
     load_fonts, load_pil_title_font, text_width, compute_text_layout,
-    wrap_two_lines, format_remaining,
+    wrap_two_lines, format_remaining, fit_text,
 )
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def draw_mode_screen(canvas, fonts, mode: DisplayMode, payload: dict,
     `accent` is the configured panel colour, so the setup and link screens
     match the display they are about to become. Errors stay red regardless.
     """
-    _font_big, _font_sm, _font_sub, _font_clk = fonts
+    _font_big, _font_sm, _font_sub, _font_clk, _font_tiny = fonts
 
     if mode is DisplayMode.SETUP:
         _centered(canvas, _font_big, 12, accent, "Setup")
@@ -126,6 +126,22 @@ def is_within_dim_window(start: dtime, stop: dtime, now: dtime = None) -> bool:
     if start == stop:
         return False
     return _in_window(start, stop, now)
+
+
+def make_placeholder_poster(size: int = 64) -> Image.Image:
+    """The faint diagonal hatch shown while a poster is still being fetched.
+
+    Built once. It used to be drawn with a 64x64 Python loop and 4096
+    SetPixel calls *per frame* — 245k iterations a second at 60fps, for an
+    image that never changes.
+    """
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+    for y in range(size):
+        for x in range(size):
+            if (x + y) % 8 == 0:
+                px[x, y] = (30, 30, 30)
+    return img
 
 
 def make_paused_poster(img: Image.Image) -> Image.Image:
@@ -212,10 +228,53 @@ def make_title_phases(text: str, pil_font, height: int,
     return phases
 
 
+def draw_gallery(canvas, fonts, gallery, item, poster_x, text_x,
+                 accent: tuple, clock_fmt: str):
+    """One frame of a cycling idle gallery: art, caption, title, clock.
+
+    The caption is the point. A poster on its own gives no clue whether the
+    panel is reminiscing about last night or advertising what the server just
+    gained, and those are different enough that guessing is worse than not
+    showing it — so the gallery names itself in the accent colour.
+    """
+    _font_big, _font_sm, _font_sub, _font_clk, _font_tiny = fonts
+
+    art = gallery.art(item["thumb_path"]) if item else None
+    if art is not None:
+        canvas.SetImage(art, poster_x, 0)
+
+    # Caption, then title over two small lines, then the clock at the foot.
+    # 4x6, not 5x7: "Recently Played" is 75px in 5x7 against a 64px half, and
+    # DrawText does not clip — it just ran off the end of the panel, which is
+    # how the caption came out as "Recently Play".
+    cap = fit_text(_font_tiny, gallery.name, 62)
+    cx = text_x + max(0, (64 - text_width(_font_tiny, cap)) // 2)
+    graphics.DrawText(canvas, _font_tiny, cx, 8, graphics.Color(*accent), cap)
+
+    line1, line2 = wrap_two_lines(item["title"] if item else "", 12)
+    white = graphics.Color(235, 235, 235)
+    graphics.DrawText(canvas, _font_sm, text_x + 1, 24,
+                      white, fit_text(_font_sm, line1, 62))
+    if line2:
+        graphics.DrawText(canvas, _font_sm, text_x + 1, 33,
+                          white, fit_text(_font_sm, line2, 62))
+
+    sub = (item.get("subtitle") or "") if item else ""
+    if sub:
+        s1, _ = wrap_two_lines(sub, 12)
+        graphics.DrawText(canvas, _font_sm, text_x + 1, 44,
+                          graphics.Color(140, 140, 140),
+                          fit_text(_font_sm, s1, 62))
+
+    t = time.strftime(clock_fmt)
+    tx = text_x + max(0, (64 - text_width(_font_sm, t)) // 2)
+    graphics.DrawText(canvas, _font_sm, tx, 60, graphics.Color(*config.IDLE_DIM), t)
+
+
 def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.Event):
     from marquee.config import parse_hhmm
 
-    _font_big, _font_sm, _font_sub, _font_clk = load_fonts()
+    _font_big, _font_sm, _font_sub, _font_clk, _font_tiny = load_fonts()
     # None on any font it cannot compile; the scroll branch falls back to
     # whole-pixel DrawText in that case.
     _pil_title = load_pil_title_font()
@@ -230,7 +289,10 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
     scroll_offset     = 0.0
     scroll_dir        = 1
     scroll_pause_until = 0.0
-    last_session_key  = None
+    # Keyed on (session, title): a client can roll onto the next episode
+    # without changing session key, and carrying the old offset into a
+    # different-length title started it mid-scroll, running backwards.
+    last_title_key    = None
     last_frame        = time.monotonic()
     last_brightness   = None
     was_active        = True   # track transitions for log clarity
@@ -243,7 +305,14 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
     dim_start = dim_stop = dtime(0, 0)
     accent_rgb = AMBER
     remain_c = graphics.Color(*config.scale_rgb(accent_rgb, config.REMAIN_SCALE))
+    # The progress bar as two pre-coloured strips, blitted with SetImage. Drawn
+    # pixel by pixel this was ~370 SetPixel calls every frame; it is two now.
+    bar_w, bar_h = 62, config.BAR_Y1 - config.BAR_Y0 + 1
+    bar_bg   = Image.new("RGB", (bar_w, bar_h), config.PROGRESS_BG)
+    bar_fill = Image.new("RGB", (bar_w, bar_h), accent_rgb)
+    placeholder_poster = make_placeholder_poster()
     idle_mode = "clock"
+    override_mode, override_until = "none", 0
     clock_fmt = "%I:%M %p"
     # Origins of the two 64x64 halves. Everything below is drawn relative to
     # these rather than to hardcoded 0/64, so the swap is one assignment.
@@ -251,6 +320,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
     scroll_px = config.SCROLL_SPEEDS["normal"] * config.SCROLL_FRAME_MS / 1000
     show_user = True
     title_y = sub_y = user_y = rem_y = 0
+    m_title_y = m_artist_y = m_album_y = m_rem_y = 0
     needs_setup = False
     setup_addr = {"host": "", "ip": ""}
     addr_checked = 0.0
@@ -268,6 +338,8 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             dim_start   = parse_hhmm(disp["dim_start"])
             dim_stop    = parse_hhmm(disp["dim_stop"])
             idle_mode   = disp["idle_mode"]
+            override_mode  = disp["override"]
+            override_until = disp["override_until"]
             # px/sec → px/frame, converted here rather than per frame:
             # this block only re-runs when the config generation moves.
             scroll_px = (config.SCROLL_SPEEDS[disp["scroll_speed"]]
@@ -282,8 +354,16 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             else:
                 title_y, sub_y, rem_y = compute_text_layout(blocks[:3])
                 user_y = None
-            log.info("Layout: title y=%d, subtitle y=%d, user y=%s, remaining y=%d",
-                     title_y, sub_y, user_y if show_user else "hidden", rem_y)
+            # Music gets its own row plan. A track has an artist *and* an
+            # album worth naming, and neither fits the big subtitle font the
+            # video layout uses for "S04E03" or a year — so four blocks, one
+            # large and three small, spread over the same region.
+            m_title_y, m_artist_y, m_album_y, m_rem_y = compute_text_layout(
+                [_font_big, _font_sm, _font_sm, _font_sm])
+            log.info("Layout: title y=%d, subtitle y=%d, user y=%s, remaining y=%d"
+                     " (music: %d/%d/%d/%d)",
+                     title_y, sub_y, user_y if show_user else "hidden", rem_y,
+                     m_title_y, m_artist_y, m_album_y, m_rem_y)
             if disp["poster_side"] == "right":
                 poster_x, text_x = RX, 0
             else:
@@ -294,6 +374,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             accent_rgb  = config.hex_to_rgb(disp["accent"])
             remain_c    = graphics.Color(
                 *config.scale_rgb(accent_rgb, config.REMAIN_SCALE))
+            bar_fill    = Image.new("RGB", (bar_w, bar_h), accent_rgb)
             # Derived from the Plex URL rather than the `provisioned` flag, so
             # the panel starts working the moment a server is picked — and
             # says so again if that server is ever cleared.
@@ -328,7 +409,7 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                     matrix.brightness = target
                     last_brightness = target
             canvas.Clear()
-            draw_mode_screen(canvas, (_font_big, _font_sm, _font_sub, _font_clk),
+            draw_mode_screen(canvas, (_font_big, _font_sm, _font_sub, _font_clk, _font_tiny),
                              mode, payload, accent_rgb)
             canvas = matrix.SwapOnVSync(canvas)
             was_active = True
@@ -336,18 +417,26 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
             continue
 
         # ── Off gates ──────────────────────────────────────────────────────
-        # Two ways the panel goes dark: outside the display schedule, or Home
-        # Assistant reporting the TV on with ha.tv_action = "off". A theater
-        # room cannot use the dim brightness — any lit panel is a distraction
-        # in a dark room — so that case blanks rather than dims.
+        # Three ways the panel goes dark: outside the display schedule, Home
+        # Assistant reporting the TV on with ha.tv_action = "off", or someone
+        # having said "not right now" on the settings page. A theater room
+        # cannot use the dim brightness — any lit panel is a distraction in a
+        # dark room — so those cases blank rather than dim.
         with state.lock:
             ha_dim, ha_blank = state.dim, state.ha_blank
+        # The manual override is the human in the room, so it beats both the
+        # clock and the TV in either direction: "off" wins over a schedule
+        # that says on, and "on" wins over everything.
+        override = config.effective_override(override_mode, override_until)
         in_schedule = is_within_schedule(sched_start, sched_stop)
-        active = in_schedule and not ha_blank
+        active = override == "on" or (
+            override != "off" and in_schedule and not ha_blank)
         if not active:
             if was_active:
                 matrix.Clear()
-                if in_schedule:
+                if override == "off":
+                    log.info("Manual override: display off")
+                elif in_schedule:
                     log.info("Home Assistant: TV on, display off")
                 else:
                     log.info("Schedule: outside window, display off (%s–%s)",
@@ -389,6 +478,26 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                 offline = state.plex_offline
                 held = state.last_poster
 
+            # Which gallery, and which frame of it. Read outside the state
+            # lock — Gallery guards itself, and the fetcher may be mid-write.
+            gallery = gallery_items = None
+            gallery_i = 0
+            if idle_mode in config.GALLERY_MODES:
+                gallery = (state.recent_added if idle_mode == "recent_added"
+                           else state.recent_played)
+                # Only frames whose art has arrived: a gallery half-fetched on
+                # a cold start should cycle what it has, not blink through
+                # empty slots.
+                gallery_items = [i for i in gallery.items()
+                                 if gallery.art(i["thumb_path"]) is not None]
+                if gallery_items:
+                    with state.lock:
+                        if (now - state.gallery_cycled >= cycle_seconds
+                                and len(gallery_items) > 1):
+                            state.gallery_index += 1
+                            state.gallery_cycled = now
+                        gallery_i = state.gallery_index
+
             # An outage outranks the idle style, including "blank": the panel
             # going dark is exactly what someone would misread as "it broke",
             # and this is the screen that tells them which thing broke.
@@ -407,6 +516,16 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
 
             elif idle_mode == "blank":
                 pass  # canvas is already cleared; swap it out dark
+
+            elif idle_mode in config.GALLERY_MODES and gallery_items:
+                # Cycles on the same dwell as multiple sessions do: one idea
+                # of "how long a thing stays on screen" is enough for anyone
+                # to have to tune.
+                item = gallery_items[gallery_i % len(gallery_items)]
+                draw_gallery(canvas,
+                             (_font_big, _font_sm, _font_sub, _font_clk, _font_tiny),
+                             gallery, item, poster_x, text_x,
+                             accent_rgb, clock_fmt)
 
             elif idle_mode == "poster" and held is not None:
                 # Drawn at full strength: the panel brightness already
@@ -429,14 +548,22 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                                   graphics.Color(60, 60, 60), msg)
         else:
             sub_max_chars = 64 // 5
+            # Music is a different shape of thing: the album art is the point,
+            # the artist and album both deserve naming, and "who is watching"
+            # is the least interesting fact about a song. See the music layout
+            # above — the rows below pick their y from whichever plan applies.
+            is_music = current.media_type == "track"
+            row_title = m_title_y if is_music else title_y
+            row_rem   = m_rem_y if is_music else rem_y
 
             title = current.title or "—"
             tw    = text_width(_font_big, title)
             if tw <= 64:
                 graphics.DrawText(canvas, _font_big,
-                                  text_x + max(0, (64 - tw) // 2), title_y, white, title)
+                                  text_x + max(0, (64 - tw) // 2), row_title,
+                                  white, title)
             else:
-                if current.session_key != last_session_key:
+                if (current.session_key, title) != last_title_key:
                     scroll_offset      = 0.0
                     scroll_dir         = 1
                     scroll_pause_until = now + (config.SCROLL_PAUSE_MS / 1000)
@@ -469,16 +596,16 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                     # overrun into the poster half at all.
                     canvas.SetImage(
                         phases[k].crop((sx, 0, sx + 64, _font_big.height)),
-                        text_x, title_y - _font_big.baseline)
+                        text_x, row_title - _font_big.baseline)
                 else:
                     # No PIL font: whole pixels, as before. Truncated only at
                     # the draw so the accumulator keeps its fraction. Floor,
                     # not round() — banker's ties make a crawl uneven.
                     graphics.DrawText(canvas, _font_big,
                                       text_x - int(scroll_offset),
-                                      title_y, white, title)
+                                      row_title, white, title)
 
-            last_session_key = current.session_key
+            last_title_key = (current.session_key, title)
 
             # Drawn after the title on purpose: a scrolling title overruns
             # its own half, and the poster is what paints over the overrun.
@@ -491,46 +618,53 @@ def render_loop(matrix: RGBMatrix, config_store, state: State, stop: threading.E
                     poster = current.poster_paused
                 canvas.SetImage(poster, poster_x, 0)
             else:
-                for py in range(64):
-                    for px in range(64):
-                        if (px + py) % 8 == 0:
-                            canvas.SetPixel(poster_x + px, py, 30, 30, 30)
+                canvas.SetImage(placeholder_poster, poster_x, 0)
 
-            sub_text = current.subtitle or ""
-            sw = text_width(_font_sub, sub_text)
-            if sw <= 64:
-                graphics.DrawText(canvas, _font_sub,
-                                  text_x + max(0, (64 - sw) // 2), sub_y, sub_c, sub_text)
+            if is_music:
+                # Artist then album, one small row each, both truncated rather
+                # than wrapped: two rows of two lines would not fit, and a
+                # clipped artist still identifies the song.
+                artist, _ = wrap_two_lines(current.subtitle or "", sub_max_chars)
+                album, _  = wrap_two_lines(current.album or "", sub_max_chars)
+                graphics.DrawText(canvas, _font_sm, text_x + 1, m_artist_y,
+                                  sub_c, artist)
+                graphics.DrawText(canvas, _font_sm, text_x + 1, m_album_y,
+                                  user_c, album)
             else:
-                # Two small lines fill exactly the block the single large line
-                # would have occupied, so nothing collides with the row below.
-                block_top = sub_y - _font_sub.baseline
-                line1_y   = block_top + _font_sm.baseline
-                line1, line2 = wrap_two_lines(sub_text, sub_max_chars)
-                graphics.DrawText(canvas, _font_sm, text_x + 1, line1_y, sub_c, line1)
-                if line2:
-                    graphics.DrawText(canvas, _font_sm, text_x + 1,
-                                      line1_y + _font_sm.height, sub_c, line2)
+                sub_text = current.subtitle or ""
+                sw = text_width(_font_sub, sub_text)
+                if sw <= 64:
+                    graphics.DrawText(canvas, _font_sub,
+                                      text_x + max(0, (64 - sw) // 2), sub_y,
+                                      sub_c, sub_text)
+                else:
+                    # Two small lines fill exactly the block the single large
+                    # line would have occupied, so nothing collides below.
+                    block_top = sub_y - _font_sub.baseline
+                    line1_y   = block_top + _font_sm.baseline
+                    line1, line2 = wrap_two_lines(sub_text, sub_max_chars)
+                    graphics.DrawText(canvas, _font_sm, text_x + 1, line1_y,
+                                      sub_c, line1)
+                    if line2:
+                        graphics.DrawText(canvas, _font_sm, text_x + 1,
+                                          line1_y + _font_sm.height, sub_c, line2)
 
-            if show_user:
-                user = (current.user or "")[:sub_max_chars]
-                graphics.DrawText(canvas, _font_sm, text_x + 1, user_y, user_c, user)
+                if show_user:
+                    user = (current.user or "")[:sub_max_chars]
+                    graphics.DrawText(canvas, _font_sm, text_x + 1, user_y,
+                                      user_c, user)
 
             remaining = format_remaining(current.duration_ms,
                                          current.view_offset_ms)
             if remaining:
-                graphics.DrawText(canvas, _font_sm, text_x + 1, rem_y,
+                graphics.DrawText(canvas, _font_sm, text_x + 1, row_rem,
                                   remain_c, remaining)
 
-            bar_x0, bar_x1 = text_x + 1, text_x + 62
-            bar_y0, bar_y1 = config.BAR_Y0, config.BAR_Y1
-            for bx in range(bar_x0, bar_x1 + 1):
-                for by in range(bar_y0, bar_y1 + 1):
-                    canvas.SetPixel(bx, by, *config.PROGRESS_BG)
-            fill = int((bar_x1 - bar_x0) * current.progress)
-            for bx in range(bar_x0, bar_x0 + fill + 1):
-                for by in range(bar_y0, bar_y1 + 1):
-                    canvas.SetPixel(bx, by, *accent_rgb)
+            bar_x0 = text_x + 1
+            canvas.SetImage(bar_bg, bar_x0, config.BAR_Y0)
+            fill = int((bar_w - 1) * current.progress) + 1
+            canvas.SetImage(bar_fill.crop((0, 0, fill, bar_h)),
+                            bar_x0, config.BAR_Y0)
 
             idx, n = state.cycle_position()
             if n > 1:

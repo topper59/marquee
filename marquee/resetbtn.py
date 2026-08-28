@@ -16,6 +16,7 @@ logs once and disables itself.
 """
 
 import logging
+import math
 import threading
 import time
 
@@ -78,7 +79,10 @@ class ResetButton(threading.Thread):
                     self._factory_reset()
                     return
                 if held >= INFO_HOLD_MAX:
-                    remaining = int(RESET_HOLD - held) + 1
+                    # ceil, not int()+1: at exactly 3s held the old form
+                    # counted 8 with 7 seconds left, and the panel's countdown
+                    # is the only clock the person holding the button has.
+                    remaining = max(1, math.ceil(RESET_HOLD - held))
                     self.state.set_mode(DisplayMode.RESETTING, seconds=remaining)
             else:
                 if pressed_at is not None:

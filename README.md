@@ -15,11 +15,60 @@ remaining, and a progress bar.
 - **Settings web UI** at `http://marquee.local` — session filters (whose
   streams appear), brightness, schedules and dimming, layout, accent colour,
   idle modes, static IP, optional password.
-- **Home Assistant** (optional) — dim the panel while the TV is on.
+- **Home Assistant** (optional) — dim or blank the panel while the TV is on,
+  and drive the panel the other way from HA automations (see below).
+- **Panel override** — turn the panel off for an hour, for the evening, or
+  until you turn it back on, straight from the home page. Survives a restart.
 - **Signed software updates** — the device checks GitHub Releases daily
   (opt-out) and installs on request from the settings page, with automatic
   rollback if the new version fails to start. Offline devices can install
   the same `.mqup` file by upload.
+
+## Controlling the panel from Home Assistant
+
+The Home Assistant integration in the settings page is one-directional: HA
+tells the display about your TV. To drive it the other way — an automation
+that silences the panel at bedtime, or a dashboard button — call the
+device's own API. `state` is `on`, `off`, or `auto` (back to the schedule),
+and `minutes` is optional: leave it out, or set it to 0, for "until
+something changes it".
+
+```yaml
+# configuration.yaml
+rest_command:
+  marquee_off:
+    url: "http://marquee.local/api/panel"
+    method: POST
+    content_type: "application/json"
+    payload: '{"state": "off"}'
+  marquee_on:
+    url: "http://marquee.local/api/panel"
+    method: POST
+    content_type: "application/json"
+    payload: '{"state": "auto"}'
+
+# Optional: a sensor for whether the panel is lit, and why.
+sensor:
+  - platform: rest
+    name: Marquee
+    resource: "http://marquee.local/api/panel"
+    value_template: "{{ 'on' if value_json.on else 'off' }}"
+    json_attributes: [override, override_until, in_schedule, ha_blank]
+```
+
+Any setting on the settings page can be changed the same way by POSTing
+`{"display.brightness_normal": 40}` to `/api/settings` — the API takes the
+same dotted paths the page uses.
+
+If you have set a settings password, these calls need a session; leave the
+password off on a trusted home network if you want HA to drive the panel.
+
+The device refuses state-changing requests that carry another site's `Origin`
+header, so a web page you happen to be visiting cannot reach in and change
+things. Home Assistant and `curl` send no `Origin` and are unaffected; if you
+are driving the API from something browser-based and getting a 403, that is
+why. During first-time setup — while the display is running its own open
+`Marquee-Setup` network — only the wizard's own endpoints answer at all.
 
 ## Hardware
 

@@ -117,6 +117,7 @@ async function loadSettings() {
   $("#menu-ha-sub").textContent = !cfg.ha.enabled ? "Off"
     : cfg.ha.tv_action === "off" ? "TV on \u2192 panel off" : "TV on \u2192 dim";
   $("#menu-filters-sub").textContent = filtersSummary(cfg.plex.filter);
+  $("#menu-display-sub").textContent = displaySummary(cfg.display);
   $("#menu-device-sub").textContent = cfg.device.name || "";
 }
 
@@ -128,6 +129,14 @@ function filtersSummary(f) {
   const lists = ["users", "ignore_users", "players", "ignore_players", "media_types"];
   const active = lists.filter((k) => (f[k] || []).length).length + (f.hide_paused ? 1 : 0);
   return active ? `${active} rule${active > 1 ? "s" : ""}` : "Everything";
+}
+
+/* The two things about the Display section someone actually wants confirmed
+   from the menu: how bright it is, and whether it is on right now. */
+function displaySummary(d) {
+  if (!d) return "";
+  const allDay = d.schedule_start === d.schedule_stop;
+  return `${d.brightness_normal}%` + (allDay ? "" : ` · ${d.schedule_start}–${d.schedule_stop}`);
 }
 
 /* Theme is previewed the moment it is picked — waiting for Save to find out
@@ -214,6 +223,7 @@ async function loadStatus() {
       // as "nothing is on", which is the confusion this is here to prevent.
       card.hidden = !st.plex_offline && !st.ha_blank;
     }
+    renderPanelCard(st.panel);
     renderSeen(st.sessions || []);
     const net = st.network || {};
     $("#net-status").textContent = netLabel(net);
@@ -235,6 +245,60 @@ async function loadStatus() {
     $("#ssh-disable").hidden = !st.ssh_active;
   } catch { /* status is decorative; ignore */ }
 }
+
+/* ── Panel override ───────────────────────────────────────────────────────
+   A "right now" control, so it applies on click rather than waiting for Save.
+   The card has to answer two questions at a glance: is the panel lit, and if
+   not, what turned it off — a dark panel someone did not expect is exactly
+   the confusion the ha_blank / plex_offline notices exist to prevent. */
+function panelUntilText(until) {
+  if (!until) return "";
+  const d = new Date(until * 1000);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return sameDay ? ` until ${time}` : ` until ${d.toLocaleDateString([], {
+    weekday: "short" })} ${time}`;
+}
+
+function renderPanelCard(p) {
+  if (!p) return;
+  $("#panel-state").textContent = p.on ? "On" : "Off";
+  $("#panel-state").className = "pstate " + (p.on ? "on" : "off");
+
+  let why = "";
+  if (p.override === "off") why = "Turned off by hand" + panelUntilText(p.override_until) + ".";
+  else if (p.override === "on") why = "Kept on by hand" + panelUntilText(p.override_until) +
+    ", ignoring the schedule.";
+  else if (!p.in_schedule) why = "Outside the hours set under Display.";
+  else if (p.ha_blank) why = "Your TV is on.";
+  $("#panel-why").textContent = why;
+
+  // Offer the action that is not already true.
+  $("#panel-off-actions").hidden = !p.on;
+  $("#panel-on-actions").hidden = p.on;
+  // Only worth offering when a manual override is actually overriding.
+  $("#panel-auto").hidden = p.override === "none";
+}
+
+async function setPanel(body) {
+  const res = await postJSON("/api/panel", body);
+  const out = await res.json();
+  if (!res.ok) { toast(out.error || "Could not change the panel", true); return; }
+  renderPanelCard(out);
+  toast(out.on ? "Panel on" : "Panel off");
+}
+
+document.querySelectorAll("#panel-card [data-off]").forEach((b) => {
+  b.addEventListener("click", () =>
+    setPanel({ state: "off", minutes: Number(b.dataset.off) }));
+});
+document.querySelectorAll("#panel-card [data-on]").forEach((b) => {
+  // No expiry: "on" is a deliberate act, and having it silently lapse back
+  // into a schedule that blanks the panel would read as a fault.
+  b.addEventListener("click", () => setPanel({ state: "on", minutes: 0 }));
+});
+$("#panel-auto").addEventListener("click", () => setPanel({ state: "auto" }));
 
 /* Plex's spelling of a username or a player name is not always what someone
    would type from memory, and a filter that silently matches nothing is the
@@ -296,11 +360,7 @@ async function save() {
     await fetch("/api/network/clear-error", { method: "POST" }).catch(() => {});
   }
 
-  const res = await fetch("/api/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
+  const res = await postJSON("/api/settings", patch);
   const out = await res.json();
   if (!res.ok) {
     // The device runs the same rules; if it still says no, keep the reason on
@@ -334,7 +394,7 @@ async function save() {
 
 async function restart() {
   if (!confirm("Restart the display app? The panel will blank for a few seconds.")) return;
-  await fetch("/api/restart", { method: "POST" });
+  await postJSON("/api/restart", { confirm: true });
   $("#restart-note").hidden = true;
   $("#restart-note").textContent = RESTART_NOTE;
   toast("Restarting…");
@@ -359,11 +419,8 @@ async function factoryReset(keepWifi) {
       "This cannot be undone.";
   if (!confirm(question)) return;
 
-  const res = await fetch("/api/factory-reset", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confirm: true, keep_wifi: !!keepWifi }),
-  });
+  const res = await postJSON("/api/factory-reset",
+                             { confirm: true, keep_wifi: !!keepWifi });
   const out = await res.json().catch(() => ({}));
   if (!res.ok) { toast(out.error || "Could not start the reset", true); return; }
 
@@ -382,11 +439,7 @@ async function factoryReset(keepWifi) {
 }
 
 async function setPassword(pw) {
-  const res = await fetch("/api/password", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password: pw }),
-  });
+  const res = await postJSON("/api/password", { password: pw });
   const out = await res.json();
   if (!res.ok) { toast(out.error || "Failed", true); return; }
   $("#pw-new").value = "";
@@ -438,7 +491,7 @@ $("#net-ipv4-dismiss").addEventListener("click", async () => {
 $("#reboot-btn").addEventListener("click", async () => {
   if (!confirm("Restart the display now? It goes dark for about a minute " +
                "while it reboots.")) return;
-  await fetch("/api/reboot", { method: "POST" });
+  await postJSON("/api/reboot", { confirm: true });
   clearInterval(statusTimer);
   $("#restart-note").hidden = false;
   $("#restart-note").textContent =
@@ -448,11 +501,7 @@ $("#reboot-btn").addEventListener("click", async () => {
 });
 
 async function setSsh(body) {
-  const res = await fetch("/api/ssh", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await postJSON("/api/ssh", body);
   const out = await res.json();
   if (!res.ok) { toast(out.error || "Failed", true); return; }
   $("#ssh-pw").value = "";
@@ -540,11 +589,7 @@ function updateInstalling(version) {
 }
 
 async function applyUpdate() {
-  const res = await fetch("/api/update/apply", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confirm: true }),
-  });
+  const res = await postJSON("/api/update/apply", { confirm: true });
   const out = await res.json();
   if (!res.ok) { toast(out.error || "Install failed", true); return; }
   updateInstalling(out.version);
@@ -569,12 +614,19 @@ $("#upd-install").addEventListener("click", async () => {
   try {
     const res = await fetch("/api/update/download", { method: "POST" });
     const out = await res.json();
-    if (!res.ok) { toast(out.error || "Download failed", true); return; }
+    if (!res.ok) {
+      toast(out.error || "Download failed", true);
+      btn.disabled = false;
+      btn.textContent = "Download and install";
+      return;
+    }
     btn.textContent = "Installing…";
+    // Deliberately not restored on success: the install is running, the page
+    // is about to reload, and a button back to "Download and install" invites
+    // a second press at the worst possible moment.
     await applyUpdate();
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Download and install";
+  } catch {
+    toast("The update did not go through — try again", true);
   }
 });
 

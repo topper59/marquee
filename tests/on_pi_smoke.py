@@ -13,6 +13,7 @@ import json
 import time
 import types
 import tempfile
+import io
 
 m = types.ModuleType("rgbmatrix")
 m.RGBMatrix = object
@@ -36,6 +37,7 @@ from marquee.display.matrix import (  # noqa: E402
 )
 from marquee.display.state import Session, State  # noqa: E402
 from marquee.plex import filters  # noqa: E402
+from PIL import Image  # noqa: E402
 import marquee.plex.client as plexclient  # noqa: E402
 
 failures = 0
@@ -65,7 +67,13 @@ check("short text stays on one line", wrap_two_lines("Hello", 12) == ("Hello", "
 l1, l2 = wrap_two_lines("S04E03 Got Richmond's Trophy Back", 12)
 check("no word reordering (line1 prefix)", l1 == "S04E03 Got")
 check("overflow ellipsized", l2.endswith("…"))
-check("single overlong word truncated", wrap_two_lines("Antidisestablishmentarianism", 8)[0] == "")
+# A word too long for a line stays on the line it landed on: pushing it down
+# drew a blank row above a truncated word, which reads as a bug on the panel.
+l1, l2 = wrap_two_lines("Antidisestablishmentarianism", 8)
+check("single overlong word fills line one", l1 == "Antidis…")
+check("and leaves line two empty", l2 == "")
+check("overlong second word truncates in place",
+      wrap_two_lines("Hi Antidisestablishmentarianism", 8) == ("Hi", "Antidis…"))
 
 print("format_remaining")
 check("empty without duration", format_remaining(0, 0) == "")
@@ -233,7 +241,7 @@ with tempfile.TemporaryDirectory() as td:
 
 print("factory reset")
 from marquee import factoryreset  # noqa: E402
-from marquee.netmgr import STATION_CON  # noqa: E402
+from marquee.netmgr import AP_CON, STATION_CON  # noqa: E402
 
 with tempfile.TemporaryDirectory() as td:
 
@@ -244,7 +252,23 @@ with tempfile.TemporaryDirectory() as td:
     cpath = os.path.join(td, "wipe.json")
     real_run, real_popen = factoryreset.subprocess.run, factoryreset.subprocess.Popen
     real_cfg_path = cfgmod.CONFIG_PATH
-    factoryreset.subprocess.run = lambda args, **kw: ran.append(args)
+
+    # The reset enumerates profiles before deleting them, so the stub has to
+    # answer `con show` as well as swallow the deletes. Anything that reached
+    # the real nmcli here would wipe this Pi's own WiFi.
+    SAVED_WIFI = ["homenet", STATION_CON, AP_CON]
+
+    class FakeRun:
+        """Stands in for subprocess.run: records argv, answers `con show`."""
+        def __init__(self, args, **kw):
+            ran.append(args)
+            self.returncode = 0
+            self.stdout = ""
+            if args[:4] == ["nmcli", "-t", "-f", "NAME,TYPE"]:
+                self.stdout = "".join(f"{n}:802-11-wireless\n" for n in SAVED_WIFI)
+                self.stdout += "Wired connection 1:802-3-ethernet\n"
+
+    factoryreset.subprocess.run = FakeRun
     factoryreset.subprocess.Popen = lambda args, **kw: ran.append(args)
     cfgmod.CONFIG_PATH = cpath
     try:
@@ -267,11 +291,30 @@ with tempfile.TemporaryDirectory() as td:
 
         ran.clear()
         factoryreset.reset(cpath, keep_wifi=False, restart=True)
-        deleted = [a for a in ran if a[:3] == ["nmcli", "con", "delete"]]
-        check("full reset deletes the station profile",
-              any(STATION_CON in a for a in deleted))
+        deleted = [a[-1] for a in ran if a[:3] == ["nmcli", "con", "delete"]]
+        check("full reset deletes the station profile", STATION_CON in deleted)
+        check("full reset deletes the AP profile", AP_CON in deleted)
+        # The promise on the settings page is that the display leaves your
+        # network. A hand-provisioned device's profile has some other name,
+        # and deleting only our own two left it online, never entering setup.
+        check("full reset deletes a foreign wifi profile", "homenet" in deleted)
+        check("full reset leaves ethernet alone",
+              "Wired connection 1" not in deleted)
         check("full reset schedules a restart",
               any("systemd-run" in a[0] for a in ran))
+
+        # nmcli unreachable: still delete the names we know rather than
+        # silently keeping the network.
+        blind = []
+
+        def blind_nmcli(args, timeout=None):
+            blind.append(args)
+            return 1, ""      # enumeration fails
+
+        factoryreset._delete_wifi_profiles(blind_nmcli)
+        check("a failed enumeration falls back to the known profiles",
+              sorted(a[-1] for a in blind if "delete" in a) ==
+              sorted([AP_CON, STATION_CON]))
 
         # Argument parsing: a typo must not be silently read as a full wipe.
         ran.clear()
@@ -771,6 +814,18 @@ check("media type allow-list applies",
 check("media type allow-list excludes",
       not filters.allowed(fsess(mtype="episode"), {"media_types": ["movie"]}))
 check("unknown types collapse to 'other'", filters.bucket("clip") == "other")
+check("every idle mode is accepted",
+      all(cfgmod._idle_mode(m) == m for m in cfgmod.IDLE_MODES))
+check("the gallery modes are idle modes",
+      set(cfgmod.GALLERY_MODES) <= set(cfgmod.IDLE_MODES))
+# apply_filter folds the rule lists once and reuses them across sessions; the
+# compiled form has to agree with the per-call one on every session it sees.
+_rules = filters.compile_filter({"users": "James, Ana", "hide_paused": True})
+check("compiled rules fold the lists", _rules["users"] == {"james", "ana"})
+check("compiled rules agree with the direct call",
+      filters._allowed(fsess(user="ANA"), _rules)
+      and not filters._allowed(fsess(user="Guest"), _rules)
+      and not filters._allowed(fsess(user="Ana", state="paused"), _rules))
 check("'other' is selectable",
       filters.allowed(fsess(mtype="trailer"), {"media_types": ["other"]}))
 # A session with no username must not be caught by a deny-list of real names.
@@ -1110,6 +1165,281 @@ istate.replace([bare])
 istate.replace([])
 check("a posterless session does not clear the held art",
       istate.last_poster == "SECOND")
+
+print("web security policy")
+import hashlib as _hl  # noqa: E402
+import marquee.web.server as _srv  # noqa: E402
+
+with tempfile.TemporaryDirectory() as _wd:
+    _executed = []
+
+    class _Dead:
+        """Stands in for subprocess so a probe cannot touch this machine."""
+        def __init__(self, *a, **k):
+            _executed.append(a[0] if a else None)
+            self.returncode, self.stdout, self.stderr = 0, "", ""
+
+    def _state_changing():
+        """What the app tried to *do*, ignoring read-only probes.
+
+        /api/status legitimately shells out `systemctl is-active ssh` on every
+        call, so "nothing ran at all" is the wrong assertion — the question is
+        whether anything changed the machine.
+        """
+        out = []
+        for _e in _executed:
+            if not _e:
+                continue
+            _j = " ".join(str(_x) for _x in _e)
+            if "is-active" in _j:
+                continue
+            out.append(_j)
+        return out
+
+    _real_sub, _real_dropin = _srv.subprocess, _srv.SSHD_DROPIN
+    _srv.subprocess = types.SimpleNamespace(
+        run=_Dead, Popen=_Dead, CalledProcessError=Exception,
+        TimeoutExpired=Exception)
+    _srv.SSHD_DROPIN = os.path.join(_wd, "dropin")
+    try:
+        _cfg = Config(os.path.join(_wd, "web.json"))
+
+        class _APNet:
+            status = "ap"; last_error = ""; ipv4_error = ""; scan_cache = []
+            def in_ap_mode(self): return True
+            def ip_address(self): return ""
+            def connected_ssid(self): return ""
+            def mac_address(self): return "DC:A6:32:00:00:00"
+            def clear_ipv4_error(self): pass
+            def request_join(self, *a): pass
+            def wifi_scan(self): return []
+
+        class _StaNet(_APNet):
+            status = "online"
+            def in_ap_mode(self): return False
+
+        _AP = {"Host": "10.42.0.1"}
+
+        def _client(net):
+            a = _srv.create_app(_cfg, State(), net, None)
+            a.config["TESTING"] = True
+            return a.test_client()
+
+        # ── the setup AP is an OPEN network, so anything reachable on it is
+        # reachable by anyone in radio range. Only the wizard may answer.
+        ap = _client(_APNet())
+        for _path, _body in (("/api/ssh", {"enabled": True, "password": "x" * 9}),
+                             ("/api/factory-reset", {"confirm": True}),
+                             ("/api/reboot", {"confirm": True}),
+                             ("/api/restart", {"confirm": True}),
+                             ("/api/password", {"password": "taken"}),
+                             ("/api/update/apply", {"confirm": True})):
+            _r = ap.post(_path, json=_body, headers=_AP)
+            check(f"AP mode refuses {_path}", _r.status_code == 403)
+        check("AP mode still serves the wizard",
+              ap.get("/api/status", headers=_AP).status_code == 200)
+        check("AP mode still scans for WiFi",
+              ap.get("/api/wifi/scan", headers=_AP).status_code == 200)
+        check("AP mode still joins WiFi",
+              ap.post("/api/wifi/join", json={"ssid": "n"},
+                      headers=_AP).status_code == 200)
+        check("AP mode still finds Plex",
+              ap.post("/api/plex/probe", json={"url": ""},
+                      headers=_AP).status_code == 400)   # reached, rejected body
+        check("AP mode still saves settings",
+              ap.post("/api/settings", json={"display.cycle_seconds": 12},
+                      headers=_AP).status_code == 200)
+        check("nothing changed the machine during the AP probe",
+              _state_changing() == [])
+
+        # ── cross-site requests ──────────────────────────────────────────
+        st = _client(_StaNet())
+        _FORM = "application/x-www-form-urlencoded"
+        # A missing body used to mean a meaningful default: "" for the
+        # password (remove it) and False for SSH (turn it off).
+        check("an empty-bodied /api/password is refused",
+              st.post("/api/password", data="", content_type=_FORM).status_code == 400)
+        check("an empty-bodied /api/ssh is refused",
+              st.post("/api/ssh", data="", content_type=_FORM).status_code == 400)
+        check("no SSH command ran from the form posts",
+              _state_changing() == [])
+        # Origin is attached by every browser to a cross-origin POST; curl and
+        # Home Assistant send none, and must keep working.
+        check("a cross-origin POST is refused",
+              st.post("/api/panel", json={"state": "off"},
+                      headers={"Origin": "http://evil.example"}).status_code == 403)
+        check("Sec-Fetch-Site cross-site is refused",
+              st.post("/api/panel", json={"state": "off"},
+                      headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403)
+        check("a same-origin POST still works",
+              st.post("/api/panel", json={"state": "auto"},
+                      headers={"Origin": "http://localhost"}).status_code == 200)
+        check("a header-less client (curl, Home Assistant) still works",
+              st.post("/api/panel", json={"state": "auto"}).status_code == 200)
+        check("multipart from another site is refused",
+              st.post("/api/update/upload",
+                      data={"file": (io.BytesIO(b"x"), "x.mqup")},
+                      content_type="multipart/form-data",
+                      headers={"Origin": "http://evil.example"}).status_code == 403)
+
+        # ── the password hash is not a general setting ───────────────────
+        _r = st.post("/api/settings", json={"web.password": "raw-not-a-hash"})
+        check("web.password cannot be set through /api/settings",
+              _r.status_code == 400)
+        check("and the stored password is untouched",
+              _cfg.get()["web"]["password"] is None)
+
+        # ── login lockout ────────────────────────────────────────────────
+        _cfg.update({"web.password": _hl.sha256(b"correct horse").hexdigest()})
+        st2 = _client(_StaNet())
+        for _i in range(_srv.LOGIN_MAX_FAILURES):
+            st2.post("/login", data={"password": "wrong"})
+        _r = st2.post("/login", data={"password": "correct horse"})
+        check("the right password is locked out after repeated failures",
+              b"Too many attempts" in _r.data)
+        _cfg.update({"web.password": None})
+    finally:
+        _srv.subprocess, _srv.SSHD_DROPIN = _real_sub, _real_dropin
+
+print("panel labels fit their half")
+# "Recently Played" is 75px in 5x7 against a 64px half, and graphics.DrawText
+# does not clip — it drew straight off the end of the panel, which is how the
+# caption reached the bench reading "Recently Play". Anything drawn into one
+# half at a fixed size has to be measured, not assumed.
+# rgbmatrix is stubbed here, so graphics.Font cannot measure anything. The BDF
+# itself can: PIL reads the same file and agrees with text_width to the pixel,
+# which is the property the sub-pixel scroller already leans on.
+from marquee.display.matrix import fit_text  # noqa: E402
+
+
+def bdf_width(path, text):
+    """Sum the DWIDTH advances the panel library would use."""
+    adv, cur = {}, None
+    with open(path, encoding="latin-1") as fh:
+        for line in fh:
+            if line.startswith("ENCODING"):
+                cur = int(line.split()[1])
+            elif line.startswith("DWIDTH") and cur is not None:
+                adv[cur] = int(line.split()[1])
+    return sum(adv.get(ord(c), 0) for c in text)
+
+
+class BdfFont:
+    """Enough of a graphics.Font for text_width and fit_text."""
+    def __init__(self, path):
+        self.adv, cur = {}, None
+        with open(path, encoding="latin-1") as fh:
+            for line in fh:
+                if line.startswith("ENCODING"):
+                    cur = int(line.split()[1])
+                elif line.startswith("DWIDTH") and cur is not None:
+                    self.adv[cur] = int(line.split()[1])
+
+    def CharacterWidth(self, code):
+        return self.adv.get(code, 0)
+
+
+if not os.path.exists(cfgmod.FONT_TINY):
+    print(f"  (skipped: {cfgmod.FONT_TINY} not on this machine)")
+else:
+    _tiny, _sm = BdfFont(cfgmod.FONT_TINY), BdfFont(cfgmod.FONT_SM)
+    for _label in ("Recently Played", "Recently Added"):
+        check(f"{_label!r} fits the text half", bdf_width(cfgmod.FONT_TINY, _label) <= 62)
+    # The regression itself: these are the widths that overran.
+    check("5x7 would not have fit them",
+          bdf_width(cfgmod.FONT_SM, "Recently Played") > 64)
+    # fit_text is the backstop for anything whose length is not known ahead of
+    # time — an item title from Plex, say.
+    _long = "A Very Long Film Title That Cannot Possibly Fit"
+    check("fit_text trims to the budget",
+          sum(_sm.CharacterWidth(ord(c)) for c in fit_text(_sm, _long, 62)) <= 62)
+    check("and marks what it cut", fit_text(_sm, _long, 62).endswith("…"))
+    check("but leaves short text alone", fit_text(_sm, "Dune", 62) == "Dune")
+
+print("panel override")
+from marquee.config import effective_override  # noqa: E402
+NOW = 1000.0
+check("no override is none", effective_override("none", 0, NOW) == "none")
+check("indefinite off stays off", effective_override("off", 0, NOW) == "off")
+check("indefinite on stays on", effective_override("on", 0, NOW) == "on")
+check("a live timer still holds", effective_override("off", NOW + 10, NOW) == "off")
+# The clock running out has to release the panel without anyone writing to
+# config: the render loop cannot do file I/O, so expiry is computed, not stored.
+check("an expired timer releases", effective_override("off", NOW - 1, NOW) == "none")
+check("expiry applies to 'on' too", effective_override("on", NOW - 1, NOW) == "none")
+check("garbage mode is none", effective_override("sideways", 0, NOW) == "none")
+
+print("galleries")
+from marquee.gallery import Gallery  # noqa: E402
+with tempfile.TemporaryDirectory() as gd:
+    import marquee.gallery as gmod
+    real_state, real_art = gmod.STATE_DIR, gmod.ART_DIR
+    gmod.STATE_DIR = gd
+    gmod.ART_DIR = os.path.join(gd, "art")
+    try:
+        g = Gallery("Recently Played", "played", persist=True, max_items=3)
+        check("a new gallery is empty", len(g) == 0)
+        check("adding returns True", g.add("Dune", "2021", "/t/1"))
+        # The fetcher calls add() every poll for as long as something plays;
+        # a two-hour film must not fill the gallery with itself.
+        check("the same title again is ignored", not g.add("Dune", "2021", "/t/1"))
+        g.add("Arrival", "2016", "/t/2")
+        check("newest is first", g.items()[0]["title"] == "Arrival")
+        # Re-watching moves it back to the front rather than duplicating.
+        g.add("Dune", "2021", "/t/1")
+        check("a repeat moves to the front", g.items()[0]["title"] == "Dune")
+        check("and is not duplicated",
+              [i["title"] for i in g.items()].count("Dune") == 1)
+        g.add("Sicario", "2015", "/t/3")
+        g.add("Blade Runner", "2017", "/t/4")
+        check("the gallery is bounded", len(g) == 3)
+        check("the oldest fell off",
+              "Arrival" not in [i["title"] for i in g.items()])
+
+        check("art is missing until fetched", "/t/4" in g.missing_art())
+        art = Image.new("RGB", (64, 64), (10, 20, 30))
+        g.put_art("/t/4", art)
+        check("art is served from memory", g.art("/t/4") is not None)
+        check("and no longer wanted", "/t/4" not in g.missing_art())
+
+        # The whole point of the disk cache: a restart with Plex still waking
+        # up should not show an empty slideshow.
+        g2 = Gallery("Recently Played", "played", persist=True, max_items=3)
+        check("history survives a restart",
+              [i["title"] for i in g2.items()] == [i["title"] for i in g.items()])
+        check("art is nowhere yet", g2.art("/t/4") is None)
+        check("cached art reloads from disk", g2.load_cached_art() == 1)
+        check("and is usable", g2.art("/t/4").size == (64, 64))
+
+        # Art for something that has aged out is dead weight.
+        g2.replace([{"title": "Only", "subtitle": "", "thumb_path": "/t/9"}])
+        g2.prune_art()
+        check("pruning drops art nothing refers to", g2.art("/t/4") is None)
+        check("replace sets the whole list",
+              [i["title"] for i in g2.items()] == ["Only"])
+        check("a blank title is refused", not g2.add("", "x", "/t/0"))
+
+        # Two galleries must not share an art directory. prune_art() deletes
+        # whatever the gallery's own items do not reference, so a shared one
+        # means each wipes the other's posters on every poll and neither ever
+        # shows anything — which is exactly what happened on the bench.
+        played = Gallery("Recently Played", "played", max_items=3)
+        added = Gallery("Recently Added", "added", max_items=3)
+        check("the two galleries keep art apart", played.art_dir != added.art_dir)
+        played.replace([{"title": "Mine", "subtitle": "", "thumb_path": "/p/1"}])
+        added.replace([{"title": "Theirs", "subtitle": "", "thumb_path": "/a/1"}])
+        played.put_art("/p/1", Image.new("RGB", (64, 64), (1, 2, 3)))
+        added.put_art("/a/1", Image.new("RGB", (64, 64), (4, 5, 6)))
+        played.prune_art()
+        added.prune_art()
+        check("pruning one leaves the other's art alone",
+              played.art("/p/1") is not None and added.art("/a/1") is not None)
+        check("and leaves it on disk too",
+              Gallery("Recently Added", "added", max_items=3).load_cached_art
+              is not None
+              and os.path.exists(added._art_path("/a/1")))
+    finally:
+        gmod.STATE_DIR, gmod.ART_DIR = real_state, real_art
 
 print("parse_hhmm")
 check("parses", parse_hhmm("07:30").hour == 7)

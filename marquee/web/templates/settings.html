@@ -14,6 +14,22 @@
     <ul id="np-list"></ul>
   </div>
 
+  <!-- A "right now" control, so it lives on the home screen rather than
+       behind Display: the whole point is not having to go looking. -->
+  <div id="panel-card" class="card">
+    <h2>Panel <span class="pstate" id="panel-state">—</span></h2>
+    <p class="hint" id="panel-why"></p>
+    <div class="panel-actions" id="panel-off-actions">
+      <button type="button" class="panel-btn" data-off="60">Off for an hour</button>
+      <button type="button" class="panel-btn" data-off="480">Off for the evening</button>
+      <button type="button" class="panel-btn" data-off="0">Off until I turn it on</button>
+    </div>
+    <div class="panel-actions" id="panel-on-actions" hidden>
+      <button type="button" class="panel-btn primary" data-on="1">Turn the panel on</button>
+    </div>
+    <button type="button" id="panel-auto" class="linkish" hidden>Back to the schedule</button>
+  </div>
+
   <nav class="card menucard">
     <ul class="menu">
       <li><a class="navrow" href="#plex"><span class="icon">🎬</span>Plex server
@@ -21,7 +37,7 @@
       <li><a class="navrow" href="#filters"><span class="icon">🔎</span>What to show
         <span class="sub" id="menu-filters-sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#display"><span class="icon">💡</span>Display
-        <span class="sub"></span><span class="chev">›</span></a></li>
+        <span class="sub" id="menu-display-sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#ha"><span class="icon">🏠</span>Home Assistant
         <span class="sub" id="menu-ha-sub"></span><span class="chev">›</span></a></li>
       <li><a class="navrow" href="#network"><span class="icon">📶</span>Network
@@ -184,7 +200,9 @@
       </label>
       <p class="hint">Off gives the title, episode, and time remaining the
         whole text half to spread into. Worth turning off if you are the only
-        person on the server.</p>
+        person on the server. Music is laid out differently either way — a
+        track shows its artist and album, which is more use than who put it
+        on.</p>
 
       <h3>Dim</h3>
       <div class="row">
@@ -224,14 +242,23 @@
           <option value="clock">A clock</option>
           <option value="blank">Nothing — keep the panel dark</option>
           <option value="poster">The last poster</option>
+          <option value="recent_played">Recently played — a slideshow</option>
+          <option value="recent_added">Recently added — a slideshow</option>
         </select>
       </label>
       <label class="check">
         <input type="checkbox" data-path="display.clock_24h"> 24-hour clock
       </label>
       <p class="hint">“The last poster” holds the artwork from the last thing
-        that played, dimmed, with the time beside it. It falls back to the
-        clock until something has played.</p>
+        that played, with the time beside it. It falls back to the clock until
+        something has played.</p>
+      <p class="hint">The two slideshows cycle posters at the same pace as the
+        “seconds to show each stream” setting above, and label themselves on
+        the panel so you can tell them apart. <b>Recently played</b> is what
+        this display has shown — your room's history, kept across restarts.
+        <b>Recently added</b> is what your Plex server has just gained, so it
+        doubles as a nudge towards the new arrivals. Either falls back to the
+        clock until it has artwork to show.</p>
     </div>
   </section>
 

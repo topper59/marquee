@@ -5,6 +5,18 @@
 const $ = (sel) => document.querySelector(sel);
 const fields = () => document.querySelectorAll("[data-path]");
 
+/* Every write to the device is a JSON POST. Spelling that out at each of the
+   dozen call sites buried what each one actually said, and the JSON content
+   type is load-bearing besides — it is what a cross-origin form cannot forge,
+   so the destructive endpoints check for it. */
+async function postJSON(url, body) {
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+}
+
 function getPath(obj, path) {
   return path.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
 }
@@ -112,9 +124,16 @@ function renderCandidates(servers, useHandler) {
   ul.innerHTML = "";
   servers.forEach((s) => {
     const li = document.createElement("li");
+    // textContent, not innerHTML: a server name comes from someone else's
+    // Plex account or an unauthenticated GDM reply — both untrusted markup.
     const label = document.createElement("span");
-    label.innerHTML = `<b>${s.name || s.url}</b> <span class="meta">${
-      s.url || (s.connections || [])[0] || ""}${s.auth_required ? " · needs sign-in" : ""}</span>`;
+    const name = document.createElement("b");
+    name.textContent = s.name || s.url || "";
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = (s.url || (s.connections || [])[0] || "") +
+      (s.auth_required ? " · needs sign-in" : "");
+    label.append(name, meta);
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "Use";
@@ -128,11 +147,7 @@ function renderCandidates(servers, useHandler) {
 async function selectServer(body, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Checking…"; }
   try {
-    const res = await fetch("/api/plex/select", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await postJSON("/api/plex/select", body);
     const out = await res.json();
     if (out.saved) {
       pickerMsg("");
@@ -199,11 +214,7 @@ async function plexScan() {
 
 async function startLink(server) {
   clearInterval(linkTimer);
-  const res = await fetch("/api/plex/auth/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(server ? { server } : {}),
-  });
+  const res = await postJSON("/api/plex/auth/start", server ? { server } : {});
   const out = await res.json();
   if (!res.ok) { pickerMsg(out.error || "Could not start sign-in", true); return; }
   $("#plex-link").hidden = false;
@@ -263,11 +274,7 @@ function bindPicker() {
     const url = $("#plex-manual").value.trim();
     if (!url) return;
     await cancelLink();
-    const probe = await (await fetch("/api/plex/probe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    })).json();
+    const probe = await (await postJSON("/api/plex/probe", { url })).json();
     if (!probe.ok) { pickerMsg(probe.error || "No Plex server there", true); return; }
     if (probe.auth_required) {
       await startLink({ url: probe.url, machine_id: probe.machine_id });

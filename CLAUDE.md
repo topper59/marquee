@@ -162,7 +162,9 @@ them in so image and dev device cannot drift. SSH is off in the image, the
 journal capped, onboard audio off (the matrix needs its PWM), `isolcpus=3`
 matching the unit's `CPUAffinity`. No secrets in CI: the image carries only
 the update public key. WiFi regulatory domain is baked as US — revisit
-before selling abroad.
+before selling abroad. The built image is renamed from pi-gen's `<date>-marquee-…`
+to `marquee-<version>-…` after `__version__` in the staged source, so the
+filename says what is inside it rather than when it was built.
 
 ### Factory reset without the button
 
@@ -236,6 +238,21 @@ then starts threads over one lock-guarded `State`:
   `hide_paused`; empty means "everything", deny beats allow, and matching is
   case- and whitespace-insensitive because these are typed on a phone. Plex
   item types collapse onto movie/episode/track/other.
+- **`gallery.py: Gallery`** — the two cycling idle galleries. *Recently
+  played* is written by the fetcher as sessions appear (a record of the room,
+  not of the server) and is **persisted**, because it is the one list a
+  restart cannot rebuild; *recently added* is pulled from Plex on a slow timer
+  and is not. Art is cached as 64x64 PNG under `STATE_DIR/art/<slug>/`, keyed
+  on a hash of the Plex thumb path so new artwork invalidates itself — a few
+  hundred KB all told, on disk rather than in RAM so the gallery is back
+  immediately after a restart while Plex is still waking up. Each gallery owns
+  its own lock and its own art subdirectory: `prune_art()` deletes whatever
+  the gallery's items no longer reference, so a shared directory would have
+  the two galleries deleting each other's posters every poll. The render loop
+  only ever calls `items()`, which returns a snapshot — it must never block on
+  a disk read with a frame due, which is also why these are read *without*
+  holding the `State` lock. The fetcher only does the extra work when
+  `display.idle_mode` is one of `config.GALLERY_MODES`.
 - **`ha.py: ha_poller_loop`** — optional Home Assistant integration; sets
   `State.dim` or `State.ha_blank`, never both. The TV being on is always
   required; `ha.require_sunset` (default true) adds the `sun.sun
@@ -260,7 +277,21 @@ then starts threads over one lock-guarded `State`:
   wipe itself lives in `factoryreset.py`, shared with the CLI.
 - **`web/server.py`** — Flask on port 80 (werkzeug make_server, daemon
   thread): setup wizard when unprovisioned, settings page otherwise, JSON API
-  under `/api/`. The settings page treats each section as its own form: Save
+  under `/api/`. Two `before_request` gates run ahead of the password check.
+  `block_cross_site` refuses any mutating request carrying a foreign `Origin`
+  or `Sec-Fetch-Site: cross-site` — header-less callers (curl, the Home
+  Assistant `rest_command` in the README) pass, because a request with no
+  browser behind it is not one another site provoked. `restrict_ap_mode`
+  serves only `AP_ALLOWED_EXACT`/`AP_ALLOWED_PREFIXES` while the AP is up:
+  the setup AP is **open**, so until the device is on a network its owner
+  controls, an anonymous caller in radio range must not be able to reach
+  `/api/ssh`, factory reset, reboot, updates, or `/api/password`. Endpoints
+  whose body has a meaningful falsy default (`/api/ssh`, `/api/password`)
+  reject a missing body outright rather than reading it as "off"/"clear".
+  `web.password` is refused by `/api/settings` (`SETTINGS_DENY`) — it is
+  hashed only by `/api/password`, and a raw value written here would lock
+  everyone out. `/login` locks an address out for `LOGIN_LOCKOUT_S` after
+  `LOGIN_MAX_FAILURES`. The settings page treats each section as its own form: Save
   commits only the visible section and leaving one offers to discard its
   edits, so a change you can no longer see can never ride along with an
   unrelated save. Captive-portal probes redirect in AP mode. Optional password
@@ -347,6 +378,25 @@ old behaviour only treated `00:00`/`00:00` as always-on, so `07:00`/`07:00`
 silently meant "never on" — equal endpoints are now always-on whatever the
 time.
 
+### The panel override
+
+`display.override` (`none`/`on`/`off`) plus `display.override_until` (a unix
+time, `0` meaning "until I say otherwise") is the manual "not right now"
+control — set from the home page card and from `POST /api/panel`, not saved
+with the rest of the display section. It lives in config so it survives a
+restart: someone who silenced the panel for the evening does not want a power
+blip undoing it.
+
+`config.effective_override()` is shared by the render loop and the web API so
+the panel and the page can never disagree about whether an "off for an hour"
+is still running. An expired override reads as `none` rather than being
+rewritten — the render loop must not do file I/O, and a stale line in
+config.json costs nothing until someone next looks.
+
+`GET/POST /api/panel` is also the documented Home Assistant hook (README):
+the HA integration in settings is one-directional (HA tells the display about
+the TV), and this is the other direction.
+
 ### Rendering constraints
 
 - One 64x64 half is poster art, the other is text. `display.poster_side`
@@ -364,7 +414,8 @@ time.
   `Config.generation` moves, because `graphics.Color` allocates and this loop
   runs 60×/second. The web UI keeps its own amber — a user-picked accent
   behind `--on-accent` button text is a contrast problem, not a feature.
-- `display.idle_mode` is `clock` / `blank` / `poster`. `poster` holds
+- `display.idle_mode` is `clock` / `blank` / `poster` / `recent_played` /
+  `recent_added` (see the gallery section below). `poster` holds
   `State.last_poster` — stashed by `State.replace` at the moment the session
   list goes empty, which is the last instant the artwork still exists — and
   puts the clock in the text half. It falls back to the clock before anything
@@ -373,8 +424,11 @@ time.
   could reach from the settings page. Panel brightness already carries the
   schedule, the dim window, and Home Assistant; the idle screen follows them
   like everything else.
-- An outage outranks all three idle modes, `blank` included: a dark panel is
+- An outage outranks every idle mode, `blank` included: a dark panel is
   exactly what someone would misread as "it broke".
+- Gallery captions are drawn in `FONT_TINY` (4x6), not 5x7: "Recently
+  Played" measures 75px in 5x7 against a 64px half and `DrawText` does not
+  clip, so it silently ran off the panel.
 - The render loop runs at **60fps** (`config.SCROLL_FRAME_MS`), not the 20 it
   used to. The panel itself refreshes at ~120Hz — measured on the Pi,
   `SwapOnVSync` blocks a steady 8.33ms (p95 8.35, max 8.37) — so 20fps was

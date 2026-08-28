@@ -68,6 +68,10 @@ RESULT_PATH = os.path.join(STATE_DIR, "last_result.json")
 MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 
 CHECK_INTERVAL_S = 24 * 3600
+# A check that failed says nothing about whether an update exists, only that
+# the network was not there. Retrying on the daily cadence meant one flaky
+# moment at boot cost a whole day of update awareness.
+CHECK_RETRY_S = 3600
 # Auto-install (opt-in) applies a downloaded update in this local-time window,
 # when the panel is at its least missed.
 AUTO_INSTALL_HOURS = range(3, 5)
@@ -120,11 +124,16 @@ def _payload_and_sig(path: str) -> tuple:
     return payload, sig
 
 
-def verify_bundle(path: str, pubkey_hex: str = None) -> dict:
+def verify_bundle(path: str, pubkey_hex: str = None, want_payload: bool = False):
     """Signature-check `path` and return its manifest. UpdateError if invalid.
 
     Nothing from the file is trusted before this returns: the payload is only
     parsed after the signature over its raw bytes has checked out.
+
+    With want_payload, returns (manifest, payload_bytes) so the caller can
+    unpack exactly what was verified. Re-opening the file to extract it would
+    leave a window in which the bytes on disk are not the bytes that were
+    checked.
     """
     # Imported here so a missing cryptography wheel degrades to "updates
     # unavailable" instead of taking the whole web UI down at import time.
@@ -158,11 +167,11 @@ def verify_bundle(path: str, pubkey_hex: str = None) -> dict:
         top = n.split("/", 1)[0]
         if top not in ("manifest.json", "requirements.txt", PRODUCT, "wheels"):
             raise UpdateError(f"update contains an unexpected file: {n}")
-    return manifest
+    return (manifest, payload) if want_payload else manifest
 
 
-def _extract_payload(path: str, dest: str):
-    payload, _ = _payload_and_sig(path)
+def _extract_payload(payload: bytes, dest: str):
+    """Unpack the verified payload bytes — never a path re-read from disk."""
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
         # The data filter refuses absolute paths, "..", links, and devices.
         tar.extractall(dest, filter="data")
@@ -314,7 +323,7 @@ def apply_bundle(path: str, force: bool = False) -> int:
     current_v = current_version()
     new_v = ""
     try:
-        manifest = verify_bundle(path)
+        manifest, payload = verify_bundle(path, want_payload=True)
         new_v = manifest["version"]
         if not force and not is_newer(new_v, current_v):
             raise UpdateError(
@@ -325,7 +334,7 @@ def apply_bundle(path: str, force: bool = False) -> int:
         staging = os.path.join(VERSIONS_DIR, ".staging")
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging)
-        _extract_payload(path, staging)
+        _extract_payload(payload, staging)
         packaged = _packaged_version(staging)
         if packaged != new_v:
             raise UpdateError(
@@ -404,7 +413,9 @@ class Updater:
         self.stop.wait(60 + random.uniform(0, 120))
         while not self.stop.is_set():
             cfg = self.config.get()["updates"]
-            if cfg["auto_check"] and time.time() - self.last_check >= CHECK_INTERVAL_S:
+            with self.lock:
+                due = CHECK_RETRY_S if self.check_error else CHECK_INTERVAL_S
+            if cfg["auto_check"] and time.time() - self.last_check >= due:
                 self.check_now()
             if cfg["auto_install"]:
                 self._maybe_auto_install()

@@ -56,6 +56,35 @@ def _unescape_nmcli(field: str) -> str:
     return field.replace("\\:", ":").replace("\\\\", "\\")
 
 
+def list_profiles(run_cmd=default_run_cmd) -> list[tuple[str, str]]:
+    """Every NetworkManager connection profile as (name, type).
+
+    Module level because factory reset needs it too, and reset and the state
+    machine disagreeing about which profiles exist is exactly the bug where a
+    "full" reset left a hand-provisioned device still on its WiFi.
+    """
+    rc, out = run_cmd(["nmcli", "-t", "-f", "NAME,TYPE", "con", "show"])
+    if rc != 0:
+        return []
+    rows = []
+    for line in out.splitlines():
+        parts = line.rsplit(":", 1)
+        if len(parts) == 2:
+            rows.append((_unescape_nmcli(parts[0]), parts[1]))
+    return rows
+
+
+def wifi_profile_names(run_cmd=default_run_cmd) -> list[str]:
+    """Names of every saved WiFi profile, the setup AP included.
+
+    Not just STATION_CON: a device provisioned by hand, or by an installer
+    that named the profile after the SSID, keeps its network under some other
+    name, and a reset that only knew our own two names would leave it online.
+    """
+    return [name for name, typ in list_profiles(run_cmd)
+            if typ == "802-11-wireless"]
+
+
 def wifi_mac() -> str:
     """wlan0's hardware address, upper-case ('' if the interface is absent)."""
     try:
@@ -135,19 +164,11 @@ class NetManager(threading.Thread):
         return nets
 
     def _profiles(self) -> list[tuple[str, str]]:
-        rc, out = self.run_cmd(["nmcli", "-t", "-f", "NAME,TYPE", "con", "show"])
-        if rc != 0:
-            return []
-        rows = []
-        for line in out.splitlines():
-            parts = line.rsplit(":", 1)
-            if len(parts) == 2:
-                rows.append((_unescape_nmcli(parts[0]), parts[1]))
-        return rows
+        return list_profiles(self.run_cmd)
 
     def station_profile_names(self) -> list[str]:
-        return [name for name, typ in self._profiles()
-                if typ == "802-11-wireless" and name != AP_CON]
+        """Saved WiFi profiles that are not the setup AP."""
+        return [n for n in wifi_profile_names(self.run_cmd) if n != AP_CON]
 
     def _wlan_state(self) -> str:
         rc, out = self.run_cmd(["nmcli", "-t", "-f", "DEVICE,STATE", "dev", "status"])
