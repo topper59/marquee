@@ -85,8 +85,13 @@ function navigate() {
   // clears the results it left on screen, which otherwise greeted you again
   // on the next visit.
   if (currentSection === "plex" && next !== "plex") resetPicker();
-  // A typed-but-unsaved password should not still be in the box either.
-  if (currentSection === "device" && next !== "device") $("#pw-new").value = "";
+  // A typed-but-unsaved password should not still be in the box either, nor
+  // a chosen-but-not-restored backup, nor the result of the last restore.
+  if (currentSection === "device" && next !== "device") {
+    $("#pw-new").value = "";
+    $("#restore-file").value = "";
+    $("#restore-msg").hidden = true;
+  }
   currentSection = next;
   render();
 }
@@ -518,6 +523,52 @@ $("#ssh-on").addEventListener("click", () => {
 $("#ssh-off").addEventListener("click", () => {
   if (confirm("Turn off SSH? Any open SSH sessions are disconnected."))
     setSsh({ enabled: false });
+});
+
+/* Settings backup. Downloading is a plain link in the template — only a link
+   hands the browser a file — and this is the other half. A restore rewrites
+   every section at once, so the fields are reloaded from the device rather
+   than left showing what was on screen before. */
+$("#restore-btn").addEventListener("click", async () => {
+  const f = $("#restore-file").files[0];
+  const msg = $("#restore-msg");
+  if (!f) { toast("Choose a backup file first", true); return; }
+  if (!confirm("Restore these settings?\n\nEverything on these settings " +
+               "pages is replaced by what is in the file. The WiFi network, " +
+               "the IP address settings and the settings password are left " +
+               "as they are.")) return;
+  msg.hidden = false;
+  msg.textContent = "Restoring…";
+  let res, out;
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    res = await fetch("/api/restore", { method: "POST", body: fd });
+    out = await res.json();
+  } catch {
+    msg.textContent = "The upload did not go through — try again.";
+    return;
+  }
+  if (!res.ok) { msg.textContent = out.error || "Restore failed."; return; }
+
+  $("#restore-file").value = "";
+  await loadSettings();
+  await showCurrentServer().catch(() => {});
+  const n = out.changed.length;
+  const skipped = out.skipped.length
+    ? ` ${out.skipped.length} setting${out.skipped.length === 1 ? " was" : "s were"}` +
+      ` in the file that this display does not recognise, and ` +
+      `${out.skipped.length === 1 ? "it was" : "they were"} skipped.`
+    : "";
+  msg.textContent = (n
+    ? `Restored ${n} setting${n === 1 ? "" : "s"}.`
+    : "That backup already matches how this display is set up.") + skipped;
+  if (out.restart_required.length) {
+    $("#restart-note").hidden = false;
+    toast("Restored — restart needed for some changes");
+  } else {
+    toast("Settings restored");
+  }
 });
 
 $("#factory-reset").addEventListener("click", () => factoryReset(false));

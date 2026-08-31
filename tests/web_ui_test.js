@@ -38,6 +38,7 @@ const STATUS = { sessions: [], plex_offline: false, ha_blank: false,
                  ipv4_error: "" } };
 
 let posted = [];
+let restoreReply = { ok: true, changed: [], skipped: [], restart_required: [] };
 let confirmAnswer = true;
 let confirmed = [];
 
@@ -61,8 +62,11 @@ w.confirm = (msg) => { confirmed.push(msg); return confirmAnswer; };
 w.alert = () => {};
 w.fetch = async (url, opts) => {
   const post = !!(opts && opts.method === "POST");
-  const body = post ? JSON.parse(opts.body || "{}") : {};
-  if (post) posted.push({ url, body });
+  // Most posts are JSON; the restore is a multipart upload, which has no body
+  // to read here — only that it was sent, and with which file.
+  const form = post && opts.body && typeof opts.body !== "string";
+  const body = post && !form ? JSON.parse(opts.body || "{}") : {};
+  if (post) posted.push({ url, body, form });
   let json = { ok: true };
   if (url === "/api/settings") {
     json = post ? { changed: Object.keys(body), restart_required: [] } : CFG;
@@ -76,6 +80,8 @@ w.fetch = async (url, opts) => {
             ? Math.floor(Date.now() / 1000) + body.minutes * 60 : 0 }
       : { on: true, override: body.state === "on" ? "on" : "none",
           override_until: 0, in_schedule: true, ha_blank: false };
+  } else if (url === "/api/restore") {
+    json = restoreReply;
   } else if (url === "/api/plex/auth/start") {
     json = { code: "WXYZ" };
   } else if (url === "/api/plex/auth/poll") {
@@ -503,6 +509,53 @@ const edit = (path, value) => {
 
   // The panel card is not a form field, so it must never make Save light up.
   check("the panel card leaves Save alone", $("#save").disabled);
+
+  console.log("settings backup and restore");
+  go("#device"); await settle();
+  check("the backup is a download link",
+        $("#backup-download").getAttribute("href") === "/api/backup" &&
+        $("#backup-download").hasAttribute("download"));
+
+  posted = []; confirmed = []; confirmAnswer = true;
+  $("#restore-btn").click(); await settle();
+  check("restoring with no file chosen posts nothing",
+        !posted.length && !confirmed.length);
+
+  // jsdom will not let a file input be set from script, so hand the handler
+  // the file list the browser would have given it.
+  Object.defineProperty($("#restore-file"), "files", {
+    configurable: true,
+    value: [new w.File(["{}"], "backup.json", { type: "application/json" })],
+  });
+
+  confirmAnswer = false; confirmed = []; posted = [];
+  $("#restore-btn").click(); await settle();
+  check("a restore asks first", confirmed.length === 1 &&
+        /Restore these settings/.test(confirmed[0]));
+  check("declining posts nothing", !posted.length);
+
+  confirmAnswer = true; posted = [];
+  restoreReply = { ok: true, changed: ["display.cycle_seconds", "plex.url"],
+                   skipped: ["display.hologram"], restart_required: [] };
+  // A restore rewrites sections nobody is looking at, so the page has to
+  // reload its fields rather than keep showing what was on screen.
+  edit("device.name", "Scratch");
+  $("#restore-btn").click(); await settle();
+  const rs = posted.find((p) => p.url === "/api/restore");
+  check("the restore uploads the file", rs && rs.form === true);
+  check("the result says what came back",
+        /Restored 2 settings/.test($("#restore-msg").textContent) &&
+        /1 setting was in the file that this display does not recognise/
+          .test($("#restore-msg").textContent));
+  check("the page reloads its fields after a restore",
+        field("device.name").value === "Marquee");
+  check("a restore does not leave Save armed", $("#save").disabled);
+
+  restoreReply = { ok: true, changed: ["matrix.pwm_bits"], skipped: [],
+                   restart_required: ["matrix.pwm_bits"] };
+  $("#restore-btn").click(); await settle();
+  check("a restore that needs a restart says so", !$("#restart-note").hidden);
+  $("#restart-note").hidden = true;
 
   console.log("the new idle modes are offered");
   const idle = [...field("display.idle_mode").options].map((o) => o.value);

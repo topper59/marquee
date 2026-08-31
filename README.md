@@ -23,6 +23,10 @@ remaining, and a progress bar.
   (opt-out) and installs on request from the settings page, with automatic
   rollback if the new version fails to start. Offline devices can install
   the same `.mqup` file by upload.
+- **Backup and restore** — download every setting to a file from the Device
+  page and put it back on a display that has been reset, replaced or
+  re-flashed. WiFi, IP addressing and the settings password stay with the
+  device rather than travelling in the file.
 
 ## Controlling the panel from Home Assistant
 
@@ -59,6 +63,24 @@ sensor:
 Any setting on the settings page can be changed the same way by POSTing
 `{"display.brightness_normal": 40}` to `/api/settings` — the API takes the
 same dotted paths the page uses.
+
+A whole settings document can be moved between displays the same way:
+
+```bash
+curl -o marquee-settings.json http://marquee.local/api/backup
+curl -X POST -H 'Content-Type: application/json' \
+     --data-binary @marquee-settings.json http://marquee-2.local/api/restore
+```
+
+The file holds your Plex and Home Assistant tokens in readable form — keep it
+where you would keep a password.
+
+A second display on the same network cannot also be `marquee.local`: both are
+flashed with the hostname `marquee`, so whichever finishes claiming the name
+second renames itself to **`marquee-2.local`**. Which one that is depends on
+boot order, and the display's own settings page and info screen will still
+say `marquee.local` either way — so on a two-display network, address them by
+the IP shown on the Network page rather than by name.
 
 If you have set a settings password, these calls need a session; leave the
 password off on a trusted home network if you want HA to drive the panel.

@@ -64,6 +64,17 @@ explicit `fqdn:`, cloud-init falls back to reverse DNS, which handed back
 `hostname` and `fqdn` in the seed short-circuits every fallback. Changing the
 device's name again means editing that file and deleting `obj.pkl`.
 
+**Two displays collide.** Every unit ships with the hostname `marquee`, so a
+second one on the same network loses the mDNS probe and avahi renames it to
+`marquee-2.local` (`%s-2` in libavahi-common; the daemon logs "Host name
+conflict, retrying with …"). Only the *mDNS* name changes — `hostnamectl`
+still says `marquee`, so the unit does not know, and the ~12 hardcoded
+`marquee.local` strings in the UI and on the button's info page are then
+wrong on it. Which unit wins is boot order. `device.name` does not help: it
+labels pages, it does not address them. Not fixed — the coherent fix is to
+drive the mDNS name from `device.name`, which means touching the cloud-init
+seed above. Until then the README tells two-display owners to use the IP.
+
 ### The name
 
 The product is **Marquee**. It was called `plex-matrix` (unit, `/opt`) and
@@ -323,6 +334,19 @@ most settings apply live; `matrix.*` and `web.*` need a restart
 `systemd-run`. Visual constants
 (`PAUSE_DIM`, `POSTER_SUPERSAMPLE`, `DOTS_Y`, …) and font paths remain module
 constants in config.py — edit and redeploy.
+
+`export_backup()` / `import_backup()` are the settings backup pair
+(`GET /api/backup`, `POST /api/restore` — multipart from the page, plain JSON
+for curl). The file is `{kind, backup_version, app_version, device_name,
+created, settings}` with settings as **dotted paths**, so a file from another
+version restores by lookup: unknown paths are skipped, a bad *value* refuses
+the whole restore through `update()`'s all-or-nothing rule. `BACKUP_EXCLUDE`
+is enforced in both directions — `provisioned`, `device.client_id`,
+`web.password`, `display.override*`, and all of `network.*`, which is what
+keeps a restore from pushing someone else's static address onto the only
+link. Tokens *are* in the file, in the clear; that is deliberate (a restore
+without them re-runs the Plex link flow) and the UI says so, which is also
+why neither endpoint is in `AP_ALLOWED_EXACT`.
 
 ### Plex specifics
 

@@ -239,6 +239,82 @@ with tempfile.TemporaryDirectory() as td:
     check("corrupt file recovers", cb.get()["display"]["cycle_seconds"] == 10)
     check("corrupt file preserved", os.path.exists(bad + ".corrupt"))
 
+print("settings backup")
+with tempfile.TemporaryDirectory() as td:
+    c = Config(os.path.join(td, "config.json"))
+    c.update({"display.cycle_seconds": 22, "plex.url": "http://pms:32400",
+              "plex.token": "secret-token", "plex.filter.users": "ann, bob",
+              "display.override": "off", "display.override_until": 0,
+              "network.ipv4_method": "manual",
+              "network.ipv4_address": "192.168.2.50",
+              "network.ipv4_gateway": "192.168.2.1"})
+    c.update({"web.password": "0" * 64})
+
+    doc = c.export_backup()
+    keys = doc["settings"]
+    check("backup is labelled", doc["kind"] == cfgmod.BACKUP_KIND)
+    check("backup names the device", doc["device_name"] == "Marquee")
+    check("backup carries settings", keys["display.cycle_seconds"] == 22)
+    check("backup carries list settings", keys["plex.filter.users"] == ["ann", "bob"])
+    # The tokens are the point: without them a restore leaves the display
+    # asking to be linked to Plex all over again.
+    check("backup carries the plex token", keys["plex.token"] == "secret-token")
+    for gone in ("web.password", "device.client_id", "provisioned",
+                 "display.override", "display.override_until",
+                 "network.ipv4_address", "network.ipv4_method"):
+        check(f"backup leaves out {gone}", gone not in keys)
+
+    # Restoring onto a display that has drifted puts the settings back and
+    # leaves everything the backup deliberately omits exactly as it was.
+    c2 = Config(os.path.join(td, "other.json"))
+    c2.update({"display.cycle_seconds": 5, "network.ipv4_address": "10.0.0.9"})
+    own_id = c2.get()["device"]["client_id"]
+    changed, skipped = c2.import_backup(doc)
+    got = c2.get()
+    check("restore applies settings", got["display"]["cycle_seconds"] == 22)
+    check("restore applies secrets", got["plex"]["token"] == "secret-token")
+    check("restore applies lists", got["plex"]["filter"]["users"] == ["ann", "bob"])
+    check("restore reports what changed", "display.cycle_seconds" in changed)
+    check("restore keeps this device's identity",
+          got["device"]["client_id"] == own_id)
+    check("restore keeps this device's addressing",
+          got["network"]["ipv4_address"] == "10.0.0.9")
+    check("restore leaves the password alone", got["web"]["password"] is None)
+    check("nothing to skip in our own backup", skipped == [])
+
+    # A file from a newer Marquee must still restore what this one knows.
+    future = dict(doc, settings=dict(doc["settings"], **{"display.hologram": True}))
+    changed, skipped = c2.import_backup(future)
+    check("an unknown setting is skipped, not fatal", skipped == ["display.hologram"])
+
+    # config.json with a header bolted on — the nested shape restores too.
+    nested = {"kind": cfgmod.BACKUP_KIND,
+              "settings": {"display": {"cycle_seconds": 33}}}
+    c2.import_backup(nested)
+    check("a nested backup restores", c2.get()["display"]["cycle_seconds"] == 33)
+
+    for name, bad in (("not a backup at all", {"hello": 1}),
+                      ("a backup with no settings", {"kind": cfgmod.BACKUP_KIND}),
+                      ("a backup of nothing recognisable",
+                       {"kind": cfgmod.BACKUP_KIND, "settings": {"nope": 1}})):
+        try:
+            c2.import_backup(bad)
+            check(f"refused: {name}", False)
+        except ValueError:
+            check(f"refused: {name}", True)
+
+    # An impossible value fails the whole restore rather than half-applying it.
+    try:
+        c2.import_backup({"kind": cfgmod.BACKUP_KIND,
+                          "settings": {"display.cycle_seconds": 1,
+                                       "display.idle_mode": "blank"}})
+        check("a corrupt value refuses the whole restore", False)
+    except ValueError:
+        check("a corrupt value refuses the whole restore", True)
+    check("and the restore left nothing behind",
+          c2.get()["display"]["cycle_seconds"] == 33
+          and c2.get()["display"]["idle_mode"] == "clock")
+
 print("factory reset")
 from marquee import factoryreset  # noqa: E402
 from marquee.netmgr import AP_CON, STATION_CON  # noqa: E402
@@ -1233,9 +1309,14 @@ with tempfile.TemporaryDirectory() as _wd:
                              ("/api/reboot", {"confirm": True}),
                              ("/api/restart", {"confirm": True}),
                              ("/api/password", {"password": "taken"}),
-                             ("/api/update/apply", {"confirm": True})):
+                             ("/api/update/apply", {"confirm": True}),
+                             ("/api/restore", {"kind": "marquee-settings"})):
             _r = ap.post(_path, json=_body, headers=_AP)
             check(f"AP mode refuses {_path}", _r.status_code == 403)
+        # The backup holds the Plex and HA tokens in the clear, and the setup
+        # AP is an open network.
+        check("AP mode refuses /api/backup",
+              ap.get("/api/backup", headers=_AP).status_code == 403)
         check("AP mode still serves the wizard",
               ap.get("/api/status", headers=_AP).status_code == 200)
         check("AP mode still scans for WiFi",
@@ -1281,6 +1362,21 @@ with tempfile.TemporaryDirectory() as _wd:
                       data={"file": (io.BytesIO(b"x"), "x.mqup")},
                       content_type="multipart/form-data",
                       headers={"Origin": "http://evil.example"}).status_code == 403)
+
+        # ── settings backup ──────────────────────────────────────────────
+        _r = st.get("/api/backup")
+        check("a backup downloads", _r.status_code == 200)
+        check("the backup is offered as a file",
+              "attachment" in _r.headers.get("Content-Disposition", ""))
+        check("the backup holds no password hash",
+              b"web.password" not in _r.data)
+        check("a restore from another site is refused",
+              st.post("/api/restore",
+                      data={"file": (io.BytesIO(b"{}"), "backup.json")},
+                      content_type="multipart/form-data",
+                      headers={"Origin": "http://evil.example"}).status_code == 403)
+        check("a restore of something else is refused",
+              st.post("/api/restore", json={"hello": 1}).status_code == 400)
 
         # ── the password hash is not a general setting ───────────────────
         _r = st.post("/api/settings", json={"web.password": "raw-not-a-hash"})

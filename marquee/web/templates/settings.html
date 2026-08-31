@@ -487,6 +487,34 @@
     </div>
 
     <div class="card">
+      <h2>Backup &amp; restore</h2>
+      <p class="hint">Saves everything on these settings pages — the Plex
+        server, what to show, the display settings, Home Assistant — to a file
+        on your phone or computer, so a display you have reset, replaced or
+        re-flashed can be put back the way it was in one go.</p>
+      <div class="actions">
+        <a id="backup-download" class="btn" href="/api/backup"
+           download>Download a backup</a>
+      </div>
+      <p class="hint warn">The file contains your Plex and Home Assistant
+        access tokens in readable form. Keep it somewhere you would keep a
+        password.</p>
+      <p class="hint">The WiFi network, the IP address settings and the
+        settings password are <b>not</b> in the backup: they belong to where a
+        display is standing rather than to how it is set up, and restoring
+        someone else's address onto this display would take it off the
+        network.</p>
+
+      <label>Restore from a backup file
+        <input type="file" id="restore-file" accept=".json,application/json">
+      </label>
+      <div class="actions">
+        <button id="restore-btn" type="button">Restore these settings</button>
+      </div>
+      <p class="hint" id="restore-msg" hidden></p>
+    </div>
+
+    <div class="card">
       <h2>Factory reset</h2>
       <p class="hint">Erases everything on the display — the Plex server, all
         display settings, the settings password, and the saved WiFi network —

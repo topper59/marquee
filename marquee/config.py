@@ -508,6 +508,44 @@ RESTART_REQUIRED = {"web.enabled", "web.port"} | {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Settings backup / restore
+# ─────────────────────────────────────────────────────────────────────────────
+# A backup is a small JSON document holding the settings as dotted paths, so a
+# file taken from one version restores onto another: anything the running
+# version does not recognise is skipped rather than failing the whole restore.
+BACKUP_KIND = "marquee-settings"
+BACKUP_VERSION = 1
+
+# What a backup deliberately does not carry. Enforced on the way *in* as well
+# as on the way out, so a hand-edited file cannot smuggle one of these back:
+#
+#   provisioned / device.client_id — this device's identity and lifecycle, not
+#     its settings. Two displays restored from one file must not both claim
+#     the same Plex client identifier.
+#   web.password — the stored value is a hash, i.e. a credential. A restored
+#     display is open until someone sets a password on it, which is the safe
+#     direction: the alternative is a device asking for a password nobody
+#     remembers choosing.
+#   display.override — "off until I say so" belongs to an evening, not to a
+#     backup taken during it.
+#   network.* — WiFi and addressing belong to where the display is standing.
+#     Restoring a static address onto a display on someone else's network,
+#     over that network, is exactly how one strands itself.
+BACKUP_EXCLUDE = (
+    "provisioned",
+    "device.client_id",
+    "web.password",
+    "display.override",
+    "display.override_until",
+    "network.",
+)
+
+
+def _backup_excluded(path: str) -> bool:
+    return any(path == p or path.startswith(p) for p in BACKUP_EXCLUDE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Dotted-path helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_path(d: dict, path: str):
@@ -644,3 +682,56 @@ class Config:
         if changed:
             log.info("Config updated: %s", ", ".join(sorted(changed)))
         return changed
+
+    # ── Backup / restore ─────────────────────────────────────────────────
+    def export_backup(self) -> dict:
+        """The whole settings document as a portable backup.
+
+        Settings are written out as dotted paths rather than nested, so the
+        file is the same shape update() takes and a restore onto a version
+        that has since moved a setting is a lookup, not a merge.
+
+        The file carries the Plex and Home Assistant tokens in the clear —
+        without them a restore leaves the display asking to be linked again,
+        which is most of what a backup is for. The UI says so; treat the file
+        the way you would treat the tokens.
+        """
+        import marquee
+        data = self.get()
+        settings = {p: v for p, v in _flatten(data).items()
+                    if p in _VALIDATORS and not _backup_excluded(p)}
+        return {
+            "kind": BACKUP_KIND,
+            "backup_version": BACKUP_VERSION,
+            "app_version": marquee.__version__,
+            "device_name": data["device"]["name"],
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "settings": settings,
+        }
+
+    def import_backup(self, doc: dict) -> tuple:
+        """Apply a document from export_backup(). Returns (changed, skipped).
+
+        Unrecognised settings are skipped, not fatal: a file from a newer
+        Marquee must still restore everything this version understands.
+        A recognised setting with an impossible *value* does fail the whole
+        restore, through update()'s all-or-nothing rule — that is a corrupt
+        or hand-mangled file, and half-applying it is worse than refusing.
+        """
+        if not isinstance(doc, dict) or doc.get("kind") != BACKUP_KIND:
+            raise ValueError("this is not a Marquee settings backup file")
+        settings = doc.get("settings")
+        if not isinstance(settings, dict):
+            raise ValueError("the backup has no settings in it")
+
+        patch, skipped = {}, []
+        # _flatten accepts either shape, so a nested file (hand-written, or a
+        # copy of config.json with a header bolted on) restores too.
+        for path, value in _flatten(settings).items():
+            if path in _VALIDATORS and not _backup_excluded(path):
+                patch[path] = value
+            else:
+                skipped.append(path)
+        if not patch:
+            raise ValueError("the backup has no settings this display recognises")
+        return self.update(patch), sorted(skipped)

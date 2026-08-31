@@ -6,8 +6,10 @@ app.py wraps startup, and all handlers only touch the Config/State objects.
 """
 
 import hashlib
+import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -16,7 +18,7 @@ import time
 
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, request, render_template, session
+from flask import Flask, Response, jsonify, request, render_template, session
 
 from flask import redirect
 
@@ -636,6 +638,48 @@ def create_app(config, state, netmgr=None, updater=None) -> Flask:
             "ok": True,
             "keep_wifi": keep_wifi,
             "reconnect_to": "http://marquee.local/" if keep_wifi else "",
+        })
+
+    # ── Settings backup / restore ─────────────────────────────────────────
+    # Deliberately absent from AP_ALLOWED_EXACT: the backup carries the Plex
+    # and Home Assistant tokens, and the setup AP is an open network.
+    @app.get("/api/backup")
+    def download_backup():
+        doc = config.export_backup()
+        slug = re.sub(r"[^A-Za-z0-9]+", "-",
+                      doc["device_name"]).strip("-").lower() or "marquee"
+        name = f"{slug}-settings-{time.strftime('%Y%m%d')}.json"
+        return Response(
+            json.dumps(doc, indent=2) + "\n",
+            mimetype="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.post("/api/restore")
+    def upload_restore():
+        """Apply a backup file. Multipart from the settings page, or a plain
+        JSON body so the same file can be pushed with curl."""
+        f = request.files.get("file")
+        if f is not None:
+            try:
+                doc = json.loads(f.read().decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return jsonify({"error": "that file is not a settings backup"}), 400
+        else:
+            doc = request.get_json(silent=True)
+            if doc is None:
+                return jsonify({"error": "no backup file in the upload"}), 400
+        try:
+            changed, skipped = config.import_backup(doc)
+        except (ValueError, TypeError) as e:
+            return jsonify({"error": str(e)}), 400
+        log.info("Settings restored from a backup: %d changed, %d skipped",
+                 len(changed), len(skipped))
+        return jsonify({
+            "ok": True,
+            "changed": sorted(changed),
+            "skipped": skipped,
+            "restart_required": sorted(changed & RESTART_REQUIRED),
+            "from_version": str(doc.get("app_version") or ""),
         })
 
     # ── Software updates ──────────────────────────────────────────────────

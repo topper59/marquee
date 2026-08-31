@@ -6,20 +6,34 @@
   /* Dark values live here once and are mapped in below. "Forced dark" and
      "auto, on a dark device" are genuinely two different conditions and CSS
      cannot express them in one selector — but only the mapping repeats, so
-     the two can never drift apart on colour. Warm near-black, to sit with the
-     amber rather than fight it; note that two roles inverse rather than
-     darken — the hover accent goes *lighter* than the accent, and links and
-     danger have to lift off the dark ground instead of sinking into it. */
-  --dk-bg: #16140f;
-  --dk-card: #211e17;
-  --dk-field: #1b1813;
-  --dk-border: #3a352b;
-  --dk-text: #ece7dc;
-  --dk-muted: #a49b8b;
-  --dk-accent-dark: #f2b53c;
+     the two can never drift apart on colour.
+
+     Cool neutral near-black, not the warm one this used to be. Tinting the
+     ground *towards* the amber sounded like harmony and read as brown: the
+     ground is nearly black, so it has almost no room to show a hue, while
+     text and muted text cover most of the page and carried the warmth at
+     full strength — #ece7dc and #a49b8b are 16 and 25 points off neutral
+     across their channels, and that sepia cast, not the background, is what
+     the eye actually saw. Pulling the greys cool (7 and 19 points the other
+     way) leaves the amber as the only warm thing on the page, which is the
+     point of having one accent.
+
+     Note that two roles inverse rather than darken — the hover accent goes
+     *lighter* than the accent, and links and danger have to lift off the
+     dark ground instead of sinking into it. Checked against WCAG AA: text
+     13.9:1 on card, muted 6.5:1, link 9.2:1, danger 7.5:1, and the two
+     separations that are not text — border/card 1.5:1, card/bg 1.13:1 —
+     which is what keeps a card from dissolving into the page. */
+  --dk-bg: #0d0f13;
+  --dk-card: #191d24;
+  --dk-field: #131720;
+  --dk-border: #353c48;
+  --dk-text: #e7e9ee;
+  --dk-muted: #9aa1ad;
+  --dk-accent-dark: #f5b942;
   --dk-link: #f0b640;
-  --dk-danger: #f08a80;
-  --dk-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+  --dk-danger: #ff8b82;
+  --dk-shadow: 0 1px 3px rgba(0, 0, 0, .5);
 
   color-scheme: light;
   --bg: #f4f1ea;
@@ -190,14 +204,23 @@ button.linkish {
 
 /* The section action bar sticks to the bottom of the viewport. Display is a
    long page, and a Save button that scrolls away leaves you editing with no
-   visible way to commit — the one control that must never need hunting for. */
+   visible way to commit — the one control that must never need hunting for.
+
+   It is shaped like a card rather than bled to the window edges: it floats
+   over the cards above it, so reading as one of them is what makes it look
+   deliberate instead of like a browser chrome bar. The negative bottom
+   margin eats most of main's bottom padding, leaving the same 12px at rest
+   that the sticky offset holds while scrolling. */
 #actionbar {
   position: sticky;
-  bottom: 0;
-  margin: 20px -16px -60px;
-  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  bottom: 12px;
+  margin: 20px 0 -48px;
+  padding: 12px 16px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
   background: var(--card);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
 }
 #actionbar .actions { margin-top: 0; }
 #actionbar .hint { margin-top: 10px; }
@@ -215,6 +238,21 @@ button.primary { background: var(--accent); border-color: var(--accent-dark); co
 button.primary:hover { background: var(--accent-dark); }
 button.danger { color: var(--danger); border-color: var(--danger); background: transparent; box-shadow: none; }
 button:disabled { opacity: .5; cursor: default; }
+/* Downloading the settings backup needs a real link — only a link can hand
+   the browser a file — so it is dressed as a button rather than driven from
+   script. */
+a.btn {
+  display: inline-block;
+  padding: 10px 18px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 15px;
+  text-decoration: none;
+  box-shadow: var(--shadow);
+}
+a.btn:hover { border-color: var(--accent); }
 /* Inputs had a focus ring and buttons did not, so tabbing through a section
    lost the cursor every time it reached one. */
 button:focus-visible, a:focus-visible, summary:focus-visible {
@@ -361,7 +399,9 @@ summary { color: var(--link); font-size: 14px; cursor: pointer; }
   border-radius: 8px;
   padding: 10px 18px;
   font-size: 14px;
-  box-shadow: 0 4px 24px rgba(60, 50, 20, .35);
+  /* Neutral, not the warm cast the rest of the light theme uses: the
+     toast is the one surface that floats over the dark theme too. */
+  box-shadow: 0 4px 24px rgba(0, 0, 0, .35);
 }
 #toast.error { background: var(--danger); }
 
